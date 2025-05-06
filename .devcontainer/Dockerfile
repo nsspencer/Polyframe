@@ -1,15 +1,12 @@
-# Use the full Python image (not slim) for the latest Python release
-FROM python:3.12
+# .devcontainer/Dockerfile
+FROM mcr.microsoft.com/devcontainers/python:3.12-bullseye
 
-# Install build tools, dependencies, wget, and unzip
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      git \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# (you can now omit user-creation entirely)
+# Install extra utilities if you need:
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
-RUN pip install debugpy numpy numba && \
-    pip install --upgrade pip setuptools wheel
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install debugpy numpy numba scipy pytest black flake8 isort
 
-# Set working directory for your project
-WORKDIR /app
+WORKDIR /workspace

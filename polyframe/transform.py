@@ -401,7 +401,7 @@ class Transform:
         v = np.append(vector, 0.0)
         return (self.matrix @ v)[:3]
 
-    def convert_to(self, new_coordinate_system: CoordinateFrameType, *, inplace: bool = False) -> "Transform":
+    def change_basis_to(self, new_coordinate_system: CoordinateFrameType, *, inplace: bool = False) -> "Transform":
         """
         Re-express this Transform in another coordinate system.
 

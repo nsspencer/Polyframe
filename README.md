@@ -23,8 +23,7 @@ A **fast**, **flexible**, zero-cost Python library for 3D homogeneous transforms
 - **Effortless re-framing**  
   Change the basis of a `Transform` in one call:
   ```python
-  from polyframe.frame_registry import FrameRegistry, Direction
-  from polyframe.transform import Transform
+  from polyframe import FrameRegistry, Direction, Transform
 
   tr_world = Transform.from_values(translation=[1,2,3])
   cs_robot = FrameRegistry.from_directions(
@@ -63,8 +62,7 @@ pip install polyframe
 ## 🎬 Quickstart
 
 ```python
-from polyframe.frame_registry import FrameRegistry, Direction
-from polyframe.transform import Transform
+from polyframe import FrameRegistry, Direction, Transform
 
 # 1) identity at origin, facing +X
 tr = Transform()
@@ -108,7 +106,7 @@ tr_robot = tr.change_basis_to(robot_cs)
 Choose from any of 48 valid `(x_dir,y_dir,z_dir)` triples:
 
 ```python
-from polyframe.frame_registry import Direction, FrameRegistry
+from polyframe import Direction, FrameRegistry
 
 # World: X forward, Y left, Z up
 world_cs = FrameRegistry.from_directions(
@@ -148,7 +146,7 @@ All accept flags:
 ## ⚙️ API Highlights
 
 ```python
-from polyframe.transform import Transform
+from polyframe import Transform
 
 # Construction
 tr = Transform()                             # identity

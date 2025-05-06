@@ -1,3 +1,5 @@
+# transform.py
+
 from dataclasses import dataclass, field
 from typing import Union, Optional, List, Tuple
 import numpy as np
@@ -10,7 +12,9 @@ from numpy import asarray as np_asarray
 from numpy import diag as np_diag
 from numpy import array_equal as np_array_equal
 from numpy import float64 as np_float64
+
 from polyframe.frame_registry import FrameRegistry, CoordinateFrameType
+from polyframe.utils import quaternion_to_rotation, euler_to_rotation
 
 from numba import njit
 import warnings
@@ -225,6 +229,52 @@ class Transform:
         t.coordinate_system = self.coordinate_system
         return t
 
+    def apply_quaternion(self, quaternion: np.ndarray, *, inplace: bool = False) -> "Transform":
+        """
+        Apply a quaternion to this Transform.
+
+        Args:
+            quaternion: 4-element array representing the quaternion.
+            inplace: if True, modify this Transform in place.
+
+        Returns:
+            Transform with updated rotation.
+        """
+        R = quaternion_to_rotation(quaternion)
+        if inplace:
+            self.matrix[:3, :3] = R @ self.rotation
+            return self
+
+        new = self.matrix.copy()
+        new[:3, :3] = R @ self.rotation
+        t = object.__new__(Transform)
+        t.matrix = new
+        t.coordinate_system = self.coordinate_system
+        return t
+
+    def apply_euler_rotation(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
+        """
+        Apply Euler angles to this Transform.
+
+        Args:
+            euler_angles: 3-element array representing the Euler angles (roll, pitch, yaw).
+            inplace: if True, modify this Transform in place.
+
+        Returns:
+            Transform with updated rotation.
+        """
+        R = euler_to_rotation(roll, pitch, yaw, degrees=degrees)
+        if inplace:
+            self.matrix[:3, :3] = R @ self.rotation
+            return self
+
+        new = self.matrix.copy()
+        new[:3, :3] = R @ self.rotation
+        t = object.__new__(Transform)
+        t.matrix = new
+        t.coordinate_system = self.coordinate_system
+        return t
+
     def assign_rotation(self, rotation: np.ndarray) -> "Transform":
         """
         Assign a rotation to this Transform.
@@ -388,6 +438,62 @@ class Transform:
         t.matrix = M
         t.coordinate_system = new_coordinate_system
         return t
+
+    def distance_to(self, target: Union["Transform", np.ndarray]) -> float:
+        """
+        Compute the distance to another Transform or translation vector.
+
+        Args:
+            target: the target Transform or translation vector.
+
+        Returns:
+            The distance to the target.
+        """
+        if isinstance(target, Transform):
+            tgt = target.translation
+        else:
+            tgt = np_asarray(target, float)
+
+        return np_norm(tgt - self.translation)
+
+    def vector_to(self, target: Union["Transform", np.ndarray]) -> np.ndarray:
+        """
+        Compute the vector to another Transform or translation vector.
+
+        Args:
+            target: the target Transform or translation vector.
+
+        Returns:
+            The vector to the target.
+        """
+        if isinstance(target, Transform):
+            tgt = target.translation
+        else:
+            tgt = np_asarray(target, float)
+
+        return tgt - self.translation
+
+    def direction_to(self, target: Union["Transform", np.ndarray]) -> np.ndarray:
+        """
+        Compute the direction to another Transform or translation vector.
+
+        Args:
+            target: the target Transform or translation vector.
+
+        Returns:
+            The direction to the target.
+        """
+        if isinstance(target, Transform):
+            tgt = target.translation
+        else:
+            tgt = np_asarray(target, float)
+        target_vector = tgt - self.translation
+        distance = np_norm(target_vector)
+        if distance < 1e-8:
+            # avoid division by zero
+            return np.zeros(3, dtype=self.matrix.dtype)
+
+        return target_vector / distance
 
     def look_at(
         self,

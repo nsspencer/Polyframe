@@ -1,0 +1,32 @@
+name: Publish to PyPI  
+on:
+  push:
+    tags:
+      - 'v*'           # Runs when a tag like v1.0.0 is pushed
+  workflow_dispatch:  # Optional manual trigger
+
+jobs:
+  publish:
+    name: Build and Publish 📦
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4                     # :contentReference[oaicite:13]{index=13}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5                 # :contentReference[oaicite:14]{index=14}
+        with:
+          python-version: '3.12'                      # or matrix
+
+      - name: Install build tools
+        run: pip install --upgrade build              # :contentReference[oaicite:15]{index=15}
+
+      - name: Build artifacts
+        run: python -m build                          # :contentReference[oaicite:16]{index=16}
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1  # :contentReference[oaicite:17]{index=17}
+        with:
+          user: __token__                             # :contentReference[oaicite:18]{index=18}
+          password: ${{ secrets.PYPI_API_TOKEN }}     # :contentReference[oaicite:19]{index=19}

@@ -39,7 +39,7 @@ class Transform:
         translation: Optional[Union[np.ndarray, List, Tuple]] = None,
         rotation: Optional[Union[np.ndarray, List, Tuple]] = None,
         scale: Optional[Union[np.ndarray, List, Tuple]] = None,
-        coordinate_system: CoordinateFrameType = FrameRegistry.default,
+        coordinate_system: Optional[CoordinateFrameType] = None,
         *,
         dtype: np.dtype = np_float64
     ) -> "Transform":
@@ -63,7 +63,7 @@ class Transform:
             mat[:3, :3] = rotation
         if scale is not None:
             mat[:3, :3] *= np_diag(scale)
-        return cls(mat, coordinate_system)
+        return cls(mat, coordinate_system if coordinate_system else FrameRegistry.default)
 
     @property
     def rotation(self) -> np.ndarray:

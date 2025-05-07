@@ -4,6 +4,16 @@ import numpy as np
 from numba import njit
 from typing import Tuple
 
+from numpy.linalg import norm as np_norm
+from numpy import cross as np_cross
+from numpy import eye as np_eye
+from numpy import dot as np_dot
+from numpy import array as np_array
+
+import warnings
+from numba.core.errors import NumbaPerformanceWarning
+warnings.filterwarnings("ignore", category=NumbaPerformanceWarning)
+
 
 @njit
 def quaternion_to_rotation(quaternion: np.ndarray, w_last: bool = True) -> np.ndarray:
@@ -213,3 +223,203 @@ def euler_to_quaternion(
     else:
         out[0], out[1], out[2], out[3] = qw, qx, qy, qz
     return out
+
+
+@njit
+def _rotation_to(
+    target_vector: np.ndarray,
+    current_R: np.ndarray,
+    forward: np.ndarray
+) -> np.ndarray:
+    """
+    Compute a new 3x3 rotation matrix that takes the “forward” axis
+    of the current rotation and re-aims it at the direction of `target_vector`.
+    """
+    # length of target_vector
+    d = np_norm(target_vector)
+    # if almost zero, no change
+    if d < 1e-8:
+        return current_R.copy()
+
+    # normalize desired direction
+    v_des = target_vector / d
+    # current forward in world coords
+    v_curr = np_dot(current_R, forward)
+
+    # rotation axis = v_curr × v_des
+    axis = np_cross(v_curr, v_des)
+    s = np_norm(axis)
+    c = np_dot(v_curr, v_des)
+
+    # degenerate: either aligned (c≈1) or opposite (c≈-1)
+    if s < 1e-8:
+        if c > 0.0:
+            # already pointing the right way
+            R_delta = np_eye(3)
+        else:
+            # flip 180° about any perpendicular axis
+            # pick axis orthogonal to v_curr
+            perp = np_cross(v_curr, np_array([1.0, 0.0, 0.0]))
+            if np_norm(perp) < 1e-3:
+                perp = np_cross(v_curr, np_array([0.0, 1.0, 0.0]))
+            perp /= np_norm(perp)
+            # Rodrigues 180°: R = I + 2 * (K @ K)
+            K = np_array([[0, -perp[2],  perp[1]],
+                          [perp[2],      0, -perp[0]],
+                          [-perp[1],  perp[0],     0]])
+            R_delta = np_eye(3) + 2.0 * (K @ K)
+    else:
+        # general case:
+        axis = axis / s
+        K = np_array([[0, -axis[2],  axis[1]],
+                      [axis[2],      0, -axis[0]],
+                      [-axis[1],  axis[0],      0]])
+        R_delta = np_eye(3) + K * s + (K @ K) * (1.0 - c)
+
+    # final new world rotation = R_delta @ current_R
+    return np_dot(R_delta, current_R)
+
+
+@njit
+def _az_el_range_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarray, forward: np.ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float, float]:
+    """
+    Calculate azimuth, elevation, and range from origin to target
+    in the origin's own coordinate frame.
+
+    Args:
+        target_vector: the vector from origin to target.
+        up: the up vector of the origin.
+        lateral: the lateral vector of the origin.
+        forward: the forward vector of the origin.
+        degrees: if True, return az/el in degrees, else radians.
+        signed_azimuth: if True, az ∈ [-180,180] (or [-π,π]), else [0,360).
+        counterclockwise_azimuth: if True, positive az is from forward → left,
+                        otherwise forward → right.
+        flip_elevation: if True, positive el means downward (down vector),
+                        otherwise positive means upward (up vector).
+
+    Returns:
+        (azimuth, elevation, range)
+    """
+    rng = np_norm(target_vector)
+    if rng < 1e-12:
+        return (0.0, 0.0, 0.0)
+
+    # 3) horizontal projection: subtract off the component along 'up'
+    #    (always use up for defining the horizontal plane)
+    target_vector_h = target_vector - np_dot(target_vector, up) * up
+    h_norm = np_norm(target_vector_h)
+    if h_norm < 1e-8:
+        # looking straight up/down: azimuth undefined → zero
+        az_rad = 0.0
+    else:
+        # choose which lateral axis to project onto for azimuth
+        if not counterclockwise_azimuth:
+            lateral = -lateral
+        comp = np_dot(target_vector_h, lateral)
+        az_rad = np.arctan2(comp, np_dot(target_vector_h, forward))
+
+    # 4) optionally wrap into [0,2π)
+    if not signed_azimuth:
+        az_rad = az_rad % (2*np.pi)
+
+    # 5) elevation: angle between target_vector and horizontal plane
+    #    choose up vs down as positive direction
+    e_ref = -up if flip_elevation else up
+    el_rad = np.arctan2(np_dot(target_vector, e_ref), h_norm)
+
+    # 6) degrees?
+    if degrees:
+        az_rad = np.degrees(az_rad)
+        el_rad = np.degrees(el_rad)
+
+    return az_rad, el_rad, rng
+
+
+@njit
+def _phi_theta_to(
+    target_vector: np.ndarray,
+    up: np.ndarray,
+    lateral: np.ndarray,
+    forward: np.ndarray,
+    degrees: bool,
+    signed_phi: bool,
+    counterclockwise_phi: bool,
+    polar: bool,
+    flip_theta: bool
+) -> tuple[float, float]:
+    # normalize
+    r = np_norm(target_vector)
+    if r < 1e-12:
+        return 0.0, 0.0
+    unit = target_vector / r
+
+    # φ: positive around up-axis; CCW=forward→left, else forward→right
+    axis = -lateral if counterclockwise_phi else lateral
+    phi = np.arctan2(
+        np_dot(unit, axis),
+        np_dot(unit, forward)
+    )
+    if signed_phi:
+        # wrap into (–π, π]
+        phi = (phi + np.pi) % (2*np.pi) - np.pi
+    else:
+        # wrap into [0, 2π)
+        phi = phi % (2*np.pi)
+
+    # θ
+    if polar:
+        # polar angle from up-axis:
+        theta = np.arccos(np_dot(unit, up))
+    else:
+        # elevation from horizontal:
+        # elevation = atan2(dot(unit, up), norm of horizontal component)
+        horiz = target_vector - np_dot(target_vector, up) * up
+        hnorm = np_norm(horiz)
+        theta = np.arctan2(np_dot(unit, up), hnorm)
+
+    if flip_theta:
+        theta = -theta
+
+    if degrees:
+        phi = np.degrees(phi)
+        theta = np.degrees(theta)
+    return phi, theta
+
+
+@njit
+def _latitude_longitude_to(
+    target_vector: np.ndarray,
+    up: np.ndarray,
+    lateral: np.ndarray,
+    forward: np.ndarray,
+    degrees: bool,
+    signed_longitude: bool,
+    counterclockwise_longitude: bool,
+    flip_latitude: bool
+) -> tuple[float, float]:
+    # normalize
+    r = np_norm(target_vector)
+    if r < 1e-12:
+        return 0.0, 0.0
+    unit = target_vector / r
+
+    # longitude
+    if not counterclockwise_longitude:
+        lateral = -lateral
+    lon = np.arctan2(
+        np_dot(unit, lateral),
+        np_dot(unit, forward)
+    )
+    if not signed_longitude:
+        lon = lon % (2*np.pi)
+
+    # latitude = arcsin(z/r) = angle above/below equatorial plane
+    lat = np.arcsin(np_dot(unit, up))
+    if flip_latitude:
+        lat = -lat
+
+    if degrees:
+        lat = np.degrees(lat)
+        lon = np.degrees(lon)
+    return lat, lon

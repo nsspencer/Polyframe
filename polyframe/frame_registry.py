@@ -45,7 +45,7 @@ class FrameRegistry:
         return getattr(FrameRegistry, name, None)
 
     @staticmethod
-    def change_of_basis(from_frame: CoordinateFrameType, to_frame: CoordinateFrameType) -> np.ndarray:
+    def get_system_rotation(from_frame: CoordinateFrameType, to_frame: CoordinateFrameType) -> np.ndarray:
         """
         Returns the change of basis matrix from one frame to another.
         """

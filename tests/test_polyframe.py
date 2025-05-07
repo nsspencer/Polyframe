@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import pickle
 from polyframe import Transform, FrameRegistry, Direction
+from polyframe.utils import _phi_theta_to, _latitude_longitude_to
 
 X_FORWARD_Z_UP = FrameRegistry.from_directions(
     Direction.FORWARD, Direction.LEFT, Direction.UP
@@ -38,7 +39,7 @@ class TestTransformExtras2(unittest.TestCase):
         np.testing.assert_array_equal(tr2.matrix, tr.matrix)
         self.assertEqual(tr2.coordinate_system, tr.coordinate_system)
 
-    def test_change_basis_to_input_transformed(self):
+    def test_change_coordinate_system_input_transformed(self):
         """
         If you want to preserve the *same world point* you must
         re‐express the input in the new coordinate system before feeding
@@ -54,10 +55,10 @@ class TestTransformExtras2(unittest.TestCase):
         # world point of (1,2,3) in frame 1:
         world = tr.transform_point(np.array([1, 2, 3]))
         # to get same world via tr2 we must feed in the *coords of [1,2,3]* expressed in cs2:
-        tr2 = tr.change_basis_to(cs2)
+        tr2 = tr.change_coordinate_system(cs2)
         # compute how to get coords2 so that tr2.coords2 → world
         # tr2 is R @ p + t  so coords2 = R^T @ (p_world - t)
-        R = FrameRegistry.change_of_basis(cs1, cs2)
+        R = FrameRegistry.get_system_rotation(cs1, cs2)
         coords2 = R.T @ (world - tr2.translation)
         world2 = tr2.transform_point(coords2)
         np.testing.assert_allclose(world2, world, atol=1e-8)
@@ -102,7 +103,8 @@ class TestTransformExtras(unittest.TestCase):
         C = A @ B
 
         # manual reframe of B into A’s frame:
-        R3 = FrameRegistry.change_of_basis(cs2, cs1)  # 3×3 ref-frame rotation
+        R3 = FrameRegistry.get_system_rotation(
+            cs2, cs1)  # 3×3 ref-frame rotation
         T4 = np.eye(4, dtype=R3.dtype)             # lift to homogeneous
         T4[:3, :3] = R3
         B_reframed = Transform(T4 @ B.matrix, cs1)
@@ -112,7 +114,7 @@ class TestTransformExtras(unittest.TestCase):
         np.testing.assert_array_equal(C.matrix, expected.matrix)
         self.assertEqual(C.coordinate_system, cs1)
 
-    def test_change_basis_to_reexpress_input(self):
+    def test_change_coordinate_system_reexpress_input(self):
         """
         To get the *same world point* under a converted transform,
         you must first re‐express your input in the new frame.
@@ -126,7 +128,7 @@ class TestTransformExtras(unittest.TestCase):
         p = np.array([1, 2, 3])
         world = tr.transform_point(p)
 
-        tr2 = tr.change_basis_to(cs2)
+        tr2 = tr.change_coordinate_system(cs2)
         # compute the coords in cs2 that represent the *same world point*:
         # world = tr2.rotation @ q + tr2.translation  ⇒  q = tr2.rotation.T @ (world - tr2.translation)
         q = tr2.rotation.T @ (world - tr2.translation)
@@ -240,7 +242,7 @@ class TestFrameRegistry(unittest.TestCase):
         for i, (tag1, cs1) in enumerate(frames):
             for j, (tag2, cs2) in enumerate(frames):
                 cs1: FrameRegistry
-                R = FrameRegistry.change_of_basis(cs1, cs2)
+                R = FrameRegistry.get_system_rotation(cs1, cs2)
 
                 # 1) basis mapping
                 for vec_name in ("forward", "left", "up"):
@@ -313,7 +315,7 @@ class TestTransform(unittest.TestCase):
         v = tr.transform_vector(np.array([1, 0, 0]))
         self.assertTrue(np.allclose(v, [1, 0, 0]))  # unaffected by translation
 
-    def test_change_basis_to(self):
+    def test_change_coordinate_system(self):
         cs1 = FrameRegistry.from_directions(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
@@ -321,7 +323,7 @@ class TestTransform(unittest.TestCase):
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
         tr = Transform(coordinate_system=cs1)
-        tr2 = tr.change_basis_to(cs2)
+        tr2 = tr.change_coordinate_system(cs2)
         # new coordinate system should be cs2
         self.assertEqual(tr2.coordinate_system, cs2)
 
@@ -616,7 +618,7 @@ class TestPhiThetaTo(unittest.TestCase):
         lat = self.tr.right   # note lateral = right
         fwd = self.tr.forward
         # args: vec, up, lateral, forward, degrees, signed_phi, counterclockwise_phi, polar, flip_theta
-        phi2, th2 = Transform._phi_theta_to(
+        phi2, th2 = _phi_theta_to(
             vec, up, lat, fwd,
             False, False, True, True, False
         )
@@ -667,7 +669,7 @@ class TestLatLonTo(unittest.TestCase):
         lat_axis = self.tr.right   # lateral axis is right for longitude
         fwd = self.tr.forward
         # args: vec, up, lateral, forward, degrees, signed_longitude, counterclockwise_longitude, flip_latitude
-        lat2, lon2 = Transform._latitude_longitude_to(
+        lat2, lon2 = _latitude_longitude_to(
             vec, up, lat_axis, fwd,
             False, True, True, False
         )

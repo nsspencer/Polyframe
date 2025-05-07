@@ -29,7 +29,7 @@ A **fast**, **flexible**, zero-cost Python library for 3D homogeneous transforms
   cs_robot = FrameRegistry.from_directions(
       Direction.RIGHT, Direction.FORWARD, Direction.UP
   )
-  tr_robot = tr_world.change_basis_to(cs_robot)
+  tr_robot = tr_world.change_coordinate_system(cs_robot)
   ```
 
 - **Quaternion & Euler support**  
@@ -94,7 +94,7 @@ dirn = tr.direction_to([2,2,2])
 robot_cs = FrameRegistry.from_directions(
     Direction.FORWARD, Direction.DOWN, Direction.LEFT
 )
-tr_robot = tr.change_basis_to(robot_cs)
+tr_robot = tr.change_coordinate_system(robot_cs)
 ```
 
 ---
@@ -173,7 +173,7 @@ p2 = tr.transform_point([1,2,3])
 v2 = tr.transform_vector([1,0,0])
 
 # Re-frame
-tr_new = tr.change_basis_to(other_frame)
+tr_new = tr.change_coordinate_system(other_frame)
 
 # Look-at
 tr_look = tr.look_at([x,y,z])

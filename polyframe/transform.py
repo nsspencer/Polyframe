@@ -9,13 +9,12 @@ from numpy.linalg import qr as np_qr
 from numpy import append as np_append
 from numpy import eye as np_eye
 from numpy import allclose as np_allclose
-from numpy import trace as np_trace
 from numpy import asarray as np_asarray
 from numpy import diag as np_diag
 from numpy import array_equal as np_array_equal
 from numpy import float64 as np_float64
 from polyframe.direction import Direction
-from polyframe.utils import quaternion_to_rotation, euler_to_rotation, rotation_to_euler, rotation_to_quaternion, _rotation_to, _azimuth_elevation_to, _phi_theta_to, _latitude_longitude_to
+from polyframe.utils import quaternion_to_rotation, euler_to_rotation, rotation_to_euler, rotation_to_quaternion, rotation_to, azimuth_elevation_to, phi_theta_to, latitude_longitude_to
 
 # preallocate the identity matrix for performance
 EYE4 = np_eye(4, dtype=np_float64)
@@ -78,7 +77,7 @@ class Transform:
                 S = scale
             else:
                 raise ValueError(f"Invalid scale shape: {shape}")
-            mat[:3, :3] = S
+            mat[:3, :3] = mat[:3, :3] @ S
         if perspective is not None:
             mat[3, :] = perspective
         return cls(mat)
@@ -133,26 +132,39 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes S.
         """
+        shape = np.shape(scale)
+        if shape == (1,):
+            s = float(scale[0])
+            S = np_diag([s, s, s])
+        elif shape == (3,):
+            S = np_diag(scale)
+        elif shape == (3, 3):
+            S = scale
+        else:
+            raise ValueError(f"Invalid scale shape: {shape}")
+
         mat = EYE4.copy()
-        mat[:3, :3] = np_diag(scale)
+        mat[:3, :3] = S
         return cls(mat)
 
     @classmethod
     def from_quaternion(
         cls,
         quaternion: np.ndarray,
+        w_last: bool = True,
     ) -> "Transform":
         """
         Create a Transform from a quaternion.
 
         Args:
             quaternion: 4-element array representing the quaternion.
+            w_last: if True, the quaternion is in [x, y, z, w] format.
 
         Returns:
             A new Transform whose `matrix` encodes R.
         """
         mat = EYE4.copy()
-        mat[:3, :3] = quaternion_to_rotation(quaternion)
+        mat[:3, :3] = quaternion_to_rotation(quaternion, w_last=w_last)
         return cls(mat)
 
     @classmethod
@@ -180,27 +192,6 @@ class Transform:
         return cls(mat)
 
     @classmethod
-    def from_translation_rotation(
-        cls,
-        translation: Union[np.ndarray, List, Tuple],
-        rotation: np.ndarray,
-    ) -> "Transform":
-        """
-        Create a Transform from a translation and rotation matrix.
-
-        Args:
-            translation: length-3 array to place in last column.
-            rotation: 3x3 rotation matrix to place in upper-left.
-
-        Returns:
-            A new Transform whose `matrix` encodes R·T.
-        """
-        mat = EYE4.copy()
-        mat[:3, :3] = rotation
-        mat[:3, 3] = translation
-        return cls(mat)
-
-    @classmethod
     def from_flat_array(
         cls,
         flat_array: np.ndarray,
@@ -216,7 +207,27 @@ class Transform:
         """
         if flat_array.shape != (16,):
             raise ValueError(f"Invalid flat array shape: {flat_array.shape}")
+        flat_array = np.asarray(flat_array, dtype=np_float64)
         mat = flat_array.reshape((4, 4))
+        return cls(mat)
+
+    @classmethod
+    def from_list(
+        cls,
+        list_array: List[float],
+    ) -> "Transform":
+        """
+        Create a Transform from a list.
+
+        Args:
+            list_array: 1D list of 16 floats representing the matrix.
+
+        Returns:
+            A new Transform whose `matrix` is constructed from the list.
+        """
+        if len(list_array) != 16:
+            raise ValueError(f"Invalid list array length: {len(list_array)}")
+        mat = np.array(list_array, dtype=np_float64).reshape((4, 4))
         return cls(mat)
 
     #########
@@ -368,11 +379,11 @@ class Transform:
             raise ValueError(f"Invalid scale shape: {shape}")
 
         if inplace:
-            self.matrix[:3, :3] *= S
+            self.matrix[:3, :3] = self.matrix[:3, :3] @ S      # post‑mult
             return self
 
         new = self.matrix.copy()
-        new[:3, :3] *= S
+        new[:3, :3] = new[:3, :3] @ S      # post‑mult
         return self.__class__(new)
 
     def apply_perspective(self, perspective: np.ndarray, *, inplace: bool = False) -> "Transform":
@@ -437,7 +448,7 @@ class Transform:
         else:
             raise ValueError(f"Invalid scale shape: {shape}")
 
-        self.matrix[:3, :3] = S
+        self.matrix[:3, :3] = self.matrix[:3, :3] @ S
 
     @perspective.setter
     def perspective(self, value: np.ndarray) -> None:
@@ -449,7 +460,7 @@ class Transform:
         """
         self.matrix[3, :] = value
 
-    def set_translation(self, translation: np.ndarray, *, inline: bool = False) -> "Transform":
+    def set_translation(self, translation: np.ndarray, *, inplace: bool = False) -> "Transform":
         """
         Assign a translation to this Transform.
 
@@ -459,7 +470,7 @@ class Transform:
         Returns:
             self with updated translation.
         """
-        if inline:
+        if inplace:
             self.matrix[:3, 3] = translation
             return self
 
@@ -467,7 +478,7 @@ class Transform:
         M[:3, 3] = translation
         return self.__class__(M)
 
-    def set_rotation(self, rotation: np.ndarray, *, inline: bool = False) -> "Transform":
+    def set_rotation(self, rotation: np.ndarray, *, inplace: bool = False) -> "Transform":
         """
         Assign a rotation to this Transform.
 
@@ -477,7 +488,7 @@ class Transform:
         Returns:
             self with updated rotation.
         """
-        if inline:
+        if inplace:
             self.matrix[:3, :3] = rotation
             return self
 
@@ -485,7 +496,7 @@ class Transform:
         M[:3, :3] = rotation
         return self.__class__(M)
 
-    def set_rotation_from_quaternion(self, quaternion: np.ndarray, w_last: bool = True, *, inline: bool = False) -> "Transform":
+    def set_rotation_from_quaternion(self, quaternion: np.ndarray, w_last: bool = True, *, inplace: bool = False) -> "Transform":
         """
         Assign a quaternion to this Transform.
 
@@ -495,7 +506,7 @@ class Transform:
         Returns:
             self with updated rotation.
         """
-        if inline:
+        if inplace:
             self.matrix[:3, :3] = quaternion_to_rotation(
                 quaternion, w_last=w_last)
             return self
@@ -504,18 +515,18 @@ class Transform:
         M[:3, :3] = quaternion_to_rotation(quaternion, w_last=w_last)
         return self.__class__(M)
 
-    def set_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inline: bool = False) -> "Transform":
+    def set_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
         """
         Assign Euler angles to this Transform.
 
         Args:
             euler_angles: 3-element array representing the Euler angles (roll, pitch, yaw).
-            inline: if True, modify this Transform in place.
+            inplace: if True, modify this Transform in place.
 
         Returns:
             self with updated rotation.
         """
-        if inline:
+        if inplace:
             self.matrix[:3, :3] = euler_to_rotation(
                 roll, pitch, yaw, degrees=degrees)
             return self
@@ -684,7 +695,7 @@ class Transform:
         target_vector = tgt - self.matrix[:3, 3]
 
         # 3) call into our compiled routine
-        return _rotation_to(
+        return rotation_to(
             target_vector,
             self.matrix[:3, :3],
             self.basis_forward()
@@ -711,7 +722,7 @@ class Transform:
 
         # 3) call into our compiled routine
         return rotation_to_quaternion(
-            _rotation_to(
+            rotation_to(
                 target_vector,
                 self.matrix[:3, :3],
                 self.basis_forward()
@@ -741,7 +752,7 @@ class Transform:
 
         # 3) call into our compiled routine
         return rotation_to_euler(
-            _rotation_to(
+            rotation_to(
                 target_vector,
                 self.matrix[:3, :3],
                 self.basis_forward()
@@ -778,7 +789,7 @@ class Transform:
             target_vector = target.matrix[:3, 3] - self.matrix[:3, 3]
         else:
             target_vector = np_asarray(target, float) - self.matrix[:3, 3]
-        return _azimuth_elevation_to(target_vector, self.up, self.right, self.forward, degrees=degrees, signed_azimuth=signed_azimuth, counterclockwise_azimuth=counterclockwise_azimuth, flip_elevation=flip_elevation)
+        return azimuth_elevation_to(target_vector, self.up, self.right, self.forward, degrees=degrees, signed_azimuth=signed_azimuth, counterclockwise_azimuth=counterclockwise_azimuth, flip_elevation=flip_elevation)
 
     def phi_theta_to(
         self,
@@ -809,7 +820,7 @@ class Transform:
         else:
             tv = np_asarray(target, float) - self.matrix[:3, 3]
 
-        return _phi_theta_to(
+        return phi_theta_to(
             tv,
             self.up, self.right, self.forward,
             degrees,
@@ -846,7 +857,7 @@ class Transform:
         else:
             tv = np_asarray(target, float) - self.matrix[:3, 3]
 
-        return _latitude_longitude_to(
+        return latitude_longitude_to(
             tv,
             self.up, self.right, self.forward,
             degrees,
@@ -885,7 +896,7 @@ class Transform:
         target_vector = tgt - self.matrix[:3, 3]
 
         # 3) call into our compiled routine
-        R_new = _rotation_to(
+        R_new = rotation_to(
             target_vector,
             self.matrix[:3, :3],
             self.basis_forward()
@@ -901,26 +912,8 @@ class Transform:
         return self.__class__(M)
 
     ########
-    # Convenience methods
+    # Convenience/utility methods
     #
-
-    def determinant(self) -> float:
-        """
-        Compute the determinant of the matrix.
-
-        Returns:
-            The determinant of the matrix.
-        """
-        return np_det(self.matrix)
-
-    def trace(self) -> float:
-        """
-        Compute the trace of the upper left 3x3 block of the matrix.
-
-        Returns:
-            The trace of the rotation.
-        """
-        return np_trace(self.matrix[:3, :3])
 
     def is_rigid(self, tol: float = 1e-6) -> bool:
         """
@@ -939,7 +932,7 @@ class Transform:
         return (
             np_allclose(rot @ rot.T, np_eye(3), atol=tol) and
             np_allclose(np_det(rot), 1.0, atol=tol) and
-            np_allclose(np_norm(self.scale), 1.0, atol=tol)
+            np_allclose(self.scale, 1, atol=tol)
         )
 
     def orthonormalize(self, *, inplace: bool = True) -> "Transform":
@@ -955,7 +948,7 @@ class Transform:
             return self
 
         new = self.matrix.copy()
-        new[:3, :3] = np.linalg.qr(self.matrix[:3, :3])[0]
+        new[:3, :3] = np_qr(self.matrix[:3, :3])[0]
         return self.__class__(new)
 
     def inverse(self, *, inplace: bool = False) -> "Transform":
@@ -999,7 +992,7 @@ class Transform:
         return self.__class__(self.matrix.copy().T)
 
     ###########
-    # World frame properties derived from coordinate system implementation
+    # World frame properties derived from coordinate system convention
     #
 
     @property
@@ -1063,7 +1056,7 @@ class Transform:
         ...
 
     ############
-    # Basis information for the designated coordinate system
+    # Basis information and conventions
     #
 
     @staticmethod
@@ -1193,37 +1186,57 @@ class Transform:
     # Basis methods
     #
 
-    def change_coordinate_system(self, other: Type["Transform"], *, inplace: bool = False) -> "Transform":
+    def change_coordinate_system(
+        self,
+        other: Type["Transform"],
+        *,
+        inplace: bool = False
+    ) -> "Transform":
         """
-        Re-express this Transform in another coordinate system.
+        Re-express this transform in the coordinate system defined by `other` by right multiplying.
+
+        Both `self` and `other` map *their* local axes→world.  This method
+        computes the 3x3 change-of-basis P that carries `other`'s local
+        coords into `self`'s local coords, then right-multiplies your
+        4x4 matrix by the homogeneous P to yield a new 4x4 that, when
+        called on `other`-local points, gives the same world result.
+
+        Mathematically:
+            B_old = self.basis_matrix()      # rows = old-local axes in world
+            B_new = other.basis_matrix()     # rows = new-local axes in world
+            P     = B_old.T @ B_new          # new-local → old-local
+            C     = [[P, 0],
+                     [0, 1]]                # 4x4 homogeneous
+            M_new = self.matrix @ C
 
         Args:
-            new_coordinate_system: target frame.
-            inplace: if True, modify this Transform in place.
+            other:     The Transform *class* whose basis you want to switch into.
+            inplace:   If True, overwrite self.matrix; otherwise return a new instance.
 
         Returns:
-            Transform in the target coordinate system.
+            A Transform of type `other` whose numeric matrix does the same
+            world-space mapping, but expects `other`-local inputs.
         """
-        # 1) get 3×3 rotation to new frame
-        R = other.basis_matrix() @ self.basis_matrix_inv()
+        # 1) grab the 3×3 basis matrices (rows = basis vectors in world coords)
+        B_old = self.basis_matrix()    # np.ndarray (3×3)
+        B_new = other.basis_matrix()      # np.ndarray (3×3)
+
+        # 2) compute P = B_old⁻¹ B_new; since B_old is orthonormal, inv = transpose
+        P = B_old.T @ B_new                # (3×3)
+
+        # 3) build a 4×4 homogeneous change‐of‐basis
+        C = np.eye(4, dtype=self.matrix.dtype)
+        C[:3, :3] = P
+
+        # 4) apply on the right
+        M_new = self.matrix @ C
 
         if inplace:
-            self.matrix[:3, :3] = R @ self.matrix[:3, :3]  # rotation
-            self.matrix[:3, 3] = R @ self.matrix[:3, 3]  # translation
+            self.matrix[:] = M_new
             return self
 
-        # apply to old rotation and translation
-        old_R = self.matrix[:3, :3]        # 3×3
-        old_t = self.matrix[:3, 3]     # length-3
-
-        new_R = R @ old_R            # 3×3
-        new_t = R @ old_t            # length-3
-
-        # build the new 4×4 homogeneous matrix
-        M = self.matrix.copy()         # 4×4
-        M[:3, :3] = new_R
-        M[:3,  3] = new_t
-        return self.__class__(M)
+        # return an instance of the *other* subclass
+        return other(M_new)
 
     #########
     # To-styled/representation methods
@@ -1271,35 +1284,66 @@ class Transform:
 
     def __matmul__(self, other: Union["Transform", np.ndarray]) -> Union["Transform", np.ndarray]:
         """
-        Compose this Transform with another (or apply to a raw matrix).
-
-        Args:
-            other: either another Transform or a 4xN array.
-
-        Returns:
-            The composed Transform.
+        - If `other` is an ndarray, applies this transform's 4×4 matrix to it.
+        - If `other` is another Transform, composes them: self ∘ other.
         """
         if isinstance(other, np.ndarray):
             return self.matrix @ other
 
-        if not isinstance(other, self.__class__) and isinstance(other, Transform):
-            M = other.change_coordinate_system(self.__class__).matrix
-        else:
-            M = other.matrix
+        if not isinstance(other, Transform):
+            return NotImplemented
 
-        return self.__class__(self.matrix @ M)
+        # if other has a different labeling/basis subclass, convert it
+        if type(other) is not type(self):
+            other = other.change_coordinate_system(type(self))
 
-    def __eq__(self, other: "Transform") -> bool:
-        return type(self) == type(other) and np_array_equal(self.matrix, other.matrix)
+        # Compose: first apply `other`, then `self`
+        M_combined = self.matrix @ other.matrix
+        return self.__class__(M_combined)
+
+    def __mul__(self, other: Union["Transform", np.ndarray]) -> Union["Transform", np.ndarray]:
+        """
+        Alias for the @ operator: allows `self * other` as well as `self @ other`.
+        """
+        return self.__matmul__(other)
+
+    def __eq__(self, other: object) -> bool:
+        """
+        True if `other` is the same class and matrices are equal within a small tolerance.
+        """
+        if not isinstance(other, Transform) or type(self) is not type(other):
+            return False
+        return np_allclose(self.matrix, other.matrix)
 
     def __repr__(self) -> str:
-        return f"{self.__class__}(matrix={self.matrix})"
+        """
+        Unambiguous representation including class name and matrix.
+        """
+        cls = type(self).__name__
+        mat = np.array2string(self.matrix, precision=6, separator=', ')
+        return f"{cls}(matrix=\n{mat}\n)"
 
     def __str__(self) -> str:
-        return f"{self.__class__}(matrix={self.matrix})"
+        """
+        Friendly string: delegating to repr for now.
+        """
+        return self.__repr__()
 
     def __copy__(self) -> "Transform":
-        return self.__class__(self.matrix.copy())
+        """
+        Shallow copy of this Transform (matrix is copied).
+        """
+        return type(self)(self.matrix.copy())
+
+    def __deepcopy__(self, memo) -> "Transform":
+        """
+        Deep copy support for the copy module.
+        """
+        # matrices are numeric, so shallow vs deep is effectively the same here
+        return self.__copy__()
 
     def __reduce__(self):
-        return (self.__class__, (self.matrix.copy()))
+        """
+        Pickle support: reprunes to (class, (matrix,))
+        """
+        return (type(self), (self.matrix.copy(),))

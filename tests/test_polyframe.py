@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pickle
 from polyframe import Transform, Direction, create_frame_convention
-from polyframe.utils import _phi_theta_to, _latitude_longitude_to
+from polyframe.utils import phi_theta_to, latitude_longitude_to
 
 X_FORWARD_Z_UP = create_frame_convention(
     Direction.FORWARD, Direction.LEFT, Direction.UP
@@ -611,14 +611,14 @@ class TestPhiThetaTo(unittest.TestCase):
         self.assertAlmostEqual(th, -90.0, places=6)
 
     def test_internal_njit_matches_public(self):
-        # compare non‐degree mode of public vs static _phi_theta_to
+        # compare non‐degree mode of public vs static phi_theta_to
         vec = np.random.randn(3)
         phi1, th1 = self.tr.phi_theta_to(vec, degrees=False)
         up = self.tr.up
         lat = self.tr.right   # note lateral = right
         fwd = self.tr.forward
         # args: vec, up, lateral, forward, degrees, signed_phi, counterclockwise_phi, polar, flip_theta
-        phi2, th2 = _phi_theta_to(
+        phi2, th2 = phi_theta_to(
             vec, up, lat, fwd,
             False, False, True, True, False
         )
@@ -669,7 +669,7 @@ class TestLatLonTo(unittest.TestCase):
         lat_axis = self.tr.right   # lateral axis is right for longitude
         fwd = self.tr.forward
         # args: vec, up, lateral, forward, degrees, signed_longitude, counterclockwise_longitude, flip_latitude
-        lat2, lon2 = _latitude_longitude_to(
+        lat2, lon2 = latitude_longitude_to(
             vec, up, lat_axis, fwd,
             False, True, True, False
         )

@@ -226,7 +226,7 @@ def euler_to_quaternion(
 
 
 @njit
-def _rotation_to(
+def rotation_to(
     target_vector: np.ndarray,
     current_R: np.ndarray,
     forward: np.ndarray
@@ -281,7 +281,7 @@ def _rotation_to(
 
 
 @njit
-def _azimuth_elevation_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarray, forward: np.ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float]:
+def azimuth_elevation_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarray, forward: np.ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float]:
     """
     Calculate azimuth and elevation from origin to target
     in the origin's own coordinate frame.
@@ -337,7 +337,7 @@ def _azimuth_elevation_to(target_vector: np.ndarray, up: np.ndarray, lateral: np
 
 
 @njit
-def _phi_theta_to(
+def phi_theta_to(
     target_vector: np.ndarray,
     up: np.ndarray,
     lateral: np.ndarray,
@@ -388,7 +388,7 @@ def _phi_theta_to(
 
 
 @njit
-def _latitude_longitude_to(
+def latitude_longitude_to(
     target_vector: np.ndarray,
     up: np.ndarray,
     lateral: np.ndarray,

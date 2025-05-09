@@ -281,9 +281,9 @@ def _rotation_to(
 
 
 @njit
-def _az_el_range_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarray, forward: np.ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float, float]:
+def _azimuth_elevation_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarray, forward: np.ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float]:
     """
-    Calculate azimuth, elevation, and range from origin to target
+    Calculate azimuth and elevation from origin to target
     in the origin's own coordinate frame.
 
     Args:
@@ -299,11 +299,11 @@ def _az_el_range_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarr
                         otherwise positive means upward (up vector).
 
     Returns:
-        (azimuth, elevation, range)
+        (azimuth, elevation)
     """
     rng = np_norm(target_vector)
     if rng < 1e-12:
-        return (0.0, 0.0, 0.0)
+        return (0.0, 0.0)
 
     # 3) horizontal projection: subtract off the component along 'up'
     #    (always use up for defining the horizontal plane)
@@ -333,7 +333,7 @@ def _az_el_range_to(target_vector: np.ndarray, up: np.ndarray, lateral: np.ndarr
         az_rad = np.degrees(az_rad)
         el_rad = np.degrees(el_rad)
 
-    return az_rad, el_rad, rng
+    return az_rad, el_rad
 
 
 @njit

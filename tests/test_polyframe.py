@@ -2,17 +2,17 @@
 import unittest
 import numpy as np
 import pickle
-from polyframe import Transform, FrameRegistry, Direction
+from polyframe import Transform, Direction, create_frame_convention
 from polyframe.utils import _phi_theta_to, _latitude_longitude_to
 
-X_FORWARD_Z_UP = FrameRegistry.from_directions(
+X_FORWARD_Z_UP = create_frame_convention(
     Direction.FORWARD, Direction.LEFT, Direction.UP
 )
 
 
 class TestFrameRegistryExtras(unittest.TestCase):
     def test_str_and_repr(self):
-        cs = FrameRegistry.from_directions(
+        cs = create_frame_convention(
             Direction.UP, Direction.RIGHT, Direction.BACKWARD)
         # Both __str__ and __repr__ should mention the same triple
         self.assertIn("UP", str(cs))
@@ -21,7 +21,7 @@ class TestFrameRegistryExtras(unittest.TestCase):
 
     def test_pickle_roundtrip(self):
         # Make sure the CCS is pickleable and comes back equal
-        cs = FrameRegistry.from_directions(
+        cs = create_frame_convention(
             Direction.FORWARD, Direction.LEFT, Direction.DOWN)
         s = pickle.dumps(cs)
         cs2 = pickle.loads(s)
@@ -47,7 +47,7 @@ class TestTransformExtras2(unittest.TestCase):
         """
         cs1 = X_FORWARD_Z_UP
         # pick a frame that's rotated 90° about Z
-        cs2 = FrameRegistry.from_directions(
+        cs2 = create_frame_convention(
             Direction.LEFT, Direction.BACKWARD, Direction.UP
         )
         tr = Transform.from_values(translation=np.array(
@@ -91,7 +91,7 @@ class TestTransformExtras(unittest.TestCase):
     def test_matmul_frame_mismatch(self):
         """__matmul__ between transforms in different frames should reframe second."""
         cs1 = X_FORWARD_Z_UP
-        cs2 = FrameRegistry.from_directions(
+        cs2 = create_frame_convention(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
         A = Transform.from_values(translation=np.array(
@@ -120,7 +120,7 @@ class TestTransformExtras(unittest.TestCase):
         you must first re‐express your input in the new frame.
         """
         cs1 = X_FORWARD_Z_UP
-        cs2 = FrameRegistry.from_directions(
+        cs2 = create_frame_convention(
             Direction.LEFT, Direction.DOWN, Direction.BACKWARD
         )
         tr = Transform.from_values(translation=np.array(
@@ -187,7 +187,7 @@ class TestTransformExtras(unittest.TestCase):
 
 class TestFrameRegistry(unittest.TestCase):
     def test_basic_directions(self):
-        cs = FrameRegistry.from_directions(
+        cs = create_frame_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
         # enum properties
@@ -207,7 +207,7 @@ class TestFrameRegistry(unittest.TestCase):
             for y in Direction:
                 for z in Direction:
                     try:
-                        cs = FrameRegistry.from_directions(x, y, z)
+                        cs = create_frame_convention(x, y, z)
                     except KeyError:
                         continue
                     seen.add(cs)
@@ -221,7 +221,7 @@ class TestFrameRegistry(unittest.TestCase):
             frames = []
             for x, y, z in permutations(list(Direction), 3):
                 try:
-                    cs = FrameRegistry.from_directions(x, y, z)
+                    cs = create_frame_convention(x, y, z)
                 except KeyError:
                     continue
                 # determine handedness tag
@@ -316,10 +316,10 @@ class TestTransform(unittest.TestCase):
         self.assertTrue(np.allclose(v, [1, 0, 0]))  # unaffected by translation
 
     def test_change_coordinate_system(self):
-        cs1 = FrameRegistry.from_directions(
+        cs1 = create_frame_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
-        cs2 = FrameRegistry.from_directions(
+        cs2 = create_frame_convention(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
         tr = Transform(coordinate_system=cs1)
@@ -428,13 +428,13 @@ class TestAzElRangeVertical(unittest.TestCase):
         self.origin = Transform()                   # at (0,0,0), +X fwd, +Z up
 
     def test_straight_up(self):
-        az, el, rng = self.origin.az_el_range_to([0, 0, 5])
+        az, el, rng = self.origin.azimuth_elevation_to([0, 0, 5])
         self.assertAlmostEqual(az, 0.0, places=6)
         self.assertAlmostEqual(el, 90.0, places=6)
         self.assertAlmostEqual(rng, 5.0,  places=6)
 
     def test_straight_down(self):
-        az, el, rng = self.origin.az_el_range_to([0, 0, -7])
+        az, el, rng = self.origin.azimuth_elevation_to([0, 0, -7])
         self.assertAlmostEqual(az, 0.0,   places=6)
         self.assertAlmostEqual(el, -90.0, places=6)
         self.assertAlmostEqual(rng, 7.0,  places=6)
@@ -449,11 +449,11 @@ class TestAzElRangeOptions(unittest.TestCase):
 
     def test_clockwise_vs_counterclockwise(self):
         # default (clockwise, unsigned) → –90° wrapped to 270°
-        az, _, _ = self.origin.az_el_range_to(self.to_right)
+        az, _, _ = self.origin.azimuth_elevation_to(self.to_right)
         self.assertAlmostEqual(az, 270.0, places=6)
 
         # CCW convention with signed output → +90°
-        az_ccw, _, _ = self.origin.az_el_range_to(
+        az_ccw, _, _ = self.origin.azimuth_elevation_to(
             self.to_right,
             counterclockwise_azimuth=True,
             signed_azimuth=True
@@ -462,7 +462,7 @@ class TestAzElRangeOptions(unittest.TestCase):
 
     def test_radian_mode(self):
         # default (clockwise, unsigned) in radians → –π/2 wrapped to 3π/2
-        az_rad, el_rad, _ = self.origin.az_el_range_to(
+        az_rad, el_rad, _ = self.origin.azimuth_elevation_to(
             self.to_right,
             degrees=False
         )
@@ -472,7 +472,7 @@ class TestAzElRangeOptions(unittest.TestCase):
 
 class TestAzElRangeExhaustive(unittest.TestCase):
     def setUp(self):
-        cs = FrameRegistry.from_directions(
+        cs = create_frame_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
         self.origin = Transform(coordinate_system=cs)
@@ -497,7 +497,7 @@ class TestAzElRangeExhaustive(unittest.TestCase):
         ):
             period = 360.0 if degrees else 2*np.pi
             for name, vec in self.targets.items():
-                az, el, rng = self.origin.az_el_range_to(
+                az, el, rng = self.origin.azimuth_elevation_to(
                     vec,
                     degrees=degrees,
                     signed_azimuth=signed,
@@ -519,14 +519,14 @@ class TestAzElRangeExhaustive(unittest.TestCase):
 
                 # 3) flip_elevation truly negates elevation
                 #    compare flip vs non‐flip, other flags held constant
-                el_noflip = self.origin.az_el_range_to(
+                el_noflip = self.origin.azimuth_elevation_to(
                     vec,
                     degrees=degrees,
                     signed_azimuth=signed,
                     counterclockwise_azimuth=ccw,
                     flip_elevation=False
                 )[1]
-                el_flip = self.origin.az_el_range_to(
+                el_flip = self.origin.azimuth_elevation_to(
                     vec,
                     degrees=degrees,
                     signed_azimuth=signed,
@@ -539,21 +539,21 @@ class TestAzElRangeExhaustive(unittest.TestCase):
                 # 4) CW vs CCW consistency:
                 #    compute both in unsigned (signed=False) mode,
                 #    they should sum to 0 mod period
-                az_cw = self.origin.az_el_range_to(vec, degrees=degrees,
-                                                   signed_azimuth=False,
-                                                   counterclockwise_azimuth=False,
-                                                   flip_elevation=False)[0]
-                az_ccw = self.origin.az_el_range_to(vec, degrees=degrees,
-                                                    signed_azimuth=False,
-                                                    counterclockwise_azimuth=True,
-                                                    flip_elevation=False)[0]
+                az_cw = self.origin.azimuth_elevation_to(vec, degrees=degrees,
+                                                         signed_azimuth=False,
+                                                         counterclockwise_azimuth=False,
+                                                         flip_elevation=False)[0]
+                az_ccw = self.origin.azimuth_elevation_to(vec, degrees=degrees,
+                                                          signed_azimuth=False,
+                                                          counterclockwise_azimuth=True,
+                                                          flip_elevation=False)[0]
                 self.assertAlmostEqual((az_cw + az_ccw) % period, 0.0, places=6,
                                        msg=f"CW/CCW symmetry failed for {name}")
 
                 # 5) Degrees ↔ radians consistency
                 #    if we convert this degrees result to radians we get the radian‐mode result
                 if degrees:
-                    az_rad, el_rad, _ = self.origin.az_el_range_to(
+                    az_rad, el_rad, _ = self.origin.azimuth_elevation_to(
                         vec,
                         degrees=False,
                         signed_azimuth=signed,
@@ -641,7 +641,7 @@ class TestLatLonTo(unittest.TestCase):
             (0,  0, -1): (-90.0,   0.0),  # down
         }
         for vec, (exp_lat, exp_lon) in data.items():
-            lat, lon = self.tr.lat_lon_to(np.array(vec))
+            lat, lon = self.tr.latitude_longitude_to(np.array(vec))
             self.assertAlmostEqual(lat, exp_lat, places=6,
                                    msg=f"lat for {vec}")
             self.assertAlmostEqual(lon, exp_lon, places=6,
@@ -649,7 +649,7 @@ class TestLatLonTo(unittest.TestCase):
 
     def test_signed_and_ccw_longitude(self):
         # backward: default lon=180; with signed & CCW, 180→ -180
-        lat, lon = self.tr.lat_lon_to(
+        lat, lon = self.tr.latitude_longitude_to(
             np.array([-1, 0, 0]),
             signed_longitude=True,
             counterclockwise_longitude=True
@@ -659,12 +659,12 @@ class TestLatLonTo(unittest.TestCase):
 
     def test_flip_latitude(self):
         # up → lat=90; flip_latitude → -90
-        lat, _ = self.tr.lat_lon_to([0, 0, 1], flip_latitude=True)
+        lat, _ = self.tr.latitude_longitude_to([0, 0, 1], flip_latitude=True)
         self.assertAlmostEqual(lat, -90.0, places=6)
 
     def test_internal_njit_matches_public(self):
         vec = np.random.randn(3)
-        lat1, lon1 = self.tr.lat_lon_to(vec, degrees=False)
+        lat1, lon1 = self.tr.latitude_longitude_to(vec, degrees=False)
         up = self.tr.up
         lat_axis = self.tr.right   # lateral axis is right for longitude
         fwd = self.tr.forward

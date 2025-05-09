@@ -154,3 +154,40 @@ def create_frame_convention(
     NewFrame = type(cls_name, (Transform,), props)
     # make it a slots dataclass
     return dataclass(NewFrame, slots=True)
+
+
+FRAME_REGISTRY = {}
+for x in Direction:
+    for y in Direction:
+        for z in Direction:
+            try:
+                frame = create_frame_convention(x, y, z)
+                globals()[frame.__name__] = frame
+                FRAME_REGISTRY[(x, y, z)] = frame
+            except ValueError:
+                pass
+
+
+def get_transform_type(x: Direction, y: Direction, z: Direction) -> Type[Transform]:
+    """
+    Get the transform type for the given frame convention.
+
+    Parameters
+    ----------
+    x : Direction
+        The x direction of the frame convention.
+    y : Direction
+        The y direction of the frame convention.
+    z : Direction
+        The z direction of the frame convention.
+
+    Returns
+    -------
+    Transform
+        The transform type for the given frame convention.
+    """
+    val = FRAME_REGISTRY.get((x, y, z), None)
+    if val is None:
+        raise ValueError(
+            f"Frame convention {x}, {y}, {z} not valid. Must be orthogonal.")
+    return val

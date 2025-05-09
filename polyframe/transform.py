@@ -1284,8 +1284,24 @@ class Transform:
 
     def __matmul__(self, other: Union["Transform", np.ndarray]) -> Union["Transform", np.ndarray]:
         """
-        - If `other` is an ndarray, applies this transform's 4×4 matrix to it.
-        - If `other` is another Transform, composes them: self ∘ other.
+        Compute the matrix multiplication or composition of transforms.
+        This magic method overloads the @ operator. It supports two types of operands:
+        1. If 'other' is a numpy ndarray, this method applies the transform's 4x4 matrix 
+            to the array and returns the resulting array.
+        2. If 'other' is another Transform, it composes the transforms in such a way that 
+            the transformation represented by 'other' is applied first, followed by this transform. 
+            If the two transforms have different coordinate system representations,
+            'other' is converted to the same basis as self before composition.
+        Parameters:
+             other (Union["Transform", np.ndarray]): The right-hand operand. It can be either:
+                  - A numpy ndarray, in which case the transform's matrix is applied to it.
+                  - Another Transform object, in which case the transforms are composed (self ∘ other).
+        Returns:
+             Union["Transform", np.ndarray]:
+                  - A numpy ndarray if 'other' is an ndarray.
+                  - A new Transform instance representing the composition if 'other' is a Transform.
+        Raises:
+             NotImplemented: If 'other' is neither a numpy ndarray nor a Transform instance.
         """
         if isinstance(other, np.ndarray):
             return self.matrix @ other

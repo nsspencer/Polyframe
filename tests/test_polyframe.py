@@ -2,17 +2,17 @@
 import unittest
 import numpy as np
 import pickle
-from polyframe import Transform, Direction, create_frame_convention
+from polyframe import Direction, get_transform_type
 from polyframe.utils import phi_theta_to, latitude_longitude_to
 
-X_FORWARD_Z_UP = create_frame_convention(
+X_FORWARD_Z_UP = get_transform_type(
     Direction.FORWARD, Direction.LEFT, Direction.UP
 )
 
 
 class TestFrameRegistryExtras(unittest.TestCase):
     def test_str_and_repr(self):
-        cs = create_frame_convention(
+        cs = get_transform_type(
             Direction.UP, Direction.RIGHT, Direction.BACKWARD)
         # Both __str__ and __repr__ should mention the same triple
         self.assertIn("UP", str(cs))
@@ -21,51 +21,50 @@ class TestFrameRegistryExtras(unittest.TestCase):
 
     def test_pickle_roundtrip(self):
         # Make sure the CCS is pickleable and comes back equal
-        cs = create_frame_convention(
+        cs = get_transform_type(
             Direction.FORWARD, Direction.LEFT, Direction.DOWN)
         s = pickle.dumps(cs)
         cs2 = pickle.loads(s)
         self.assertEqual(cs2, cs)
 
 
-class TestTransformExtras2(unittest.TestCase):
+class TestX_FORWARD_Z_UPExtras2(unittest.TestCase):
     def test_pickle_roundtrip(self):
-        tr = Transform.from_values(
+        tr = X_FORWARD_Z_UP.from_values(
             translation=np.array([3, 4, 5]),
             rotation=np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])
         )
         s = pickle.dumps(tr)
         tr2 = pickle.loads(s)
         np.testing.assert_array_equal(tr2.matrix, tr.matrix)
-        self.assertEqual(tr2.coordinate_system, tr.coordinate_system)
 
-    def test_change_coordinate_system_input_transformed(self):
+    def test_change_coordinate_system_input_X_FORWARD_Z_UPed(self):
         """
         If you want to preserve the *same world point* you must
         re‐express the input in the new coordinate system before feeding
-        it to the converted transform.
+        it to the converted X_FORWARD_Z_UP.
         """
         cs1 = X_FORWARD_Z_UP
         # pick a frame that's rotated 90° about Z
-        cs2 = create_frame_convention(
+        cs2 = get_transform_type(
             Direction.LEFT, Direction.BACKWARD, Direction.UP
         )
-        tr = Transform.from_values(translation=np.array(
+        tr = X_FORWARD_Z_UP.from_values(translation=np.array(
             [5, 0, 0]), coordinate_system=cs1)
         # world point of (1,2,3) in frame 1:
-        world = tr.transform_point(np.array([1, 2, 3]))
+        world = tr.X_FORWARD_Z_UP_point(np.array([1, 2, 3]))
         # to get same world via tr2 we must feed in the *coords of [1,2,3]* expressed in cs2:
         tr2 = tr.change_coordinate_system(cs2)
         # compute how to get coords2 so that tr2.coords2 → world
         # tr2 is R @ p + t  so coords2 = R^T @ (p_world - t)
         R = FrameRegistry.get_system_rotation(cs1, cs2)
         coords2 = R.T @ (world - tr2.translation)
-        world2 = tr2.transform_point(coords2)
+        world2 = tr2.X_FORWARD_Z_UP_point(coords2)
         np.testing.assert_allclose(world2, world, atol=1e-8)
 
     def test_invalid_matmul_operand(self):
-        """If you @ something that isn’t a Transform or array, you get NotImplemented."""
-        tr = Transform()
+        """If you @ something that isn’t a X_FORWARD_Z_UP or array, you get NotImplemented."""
+        tr = X_FORWARD_Z_UP()
 
         class Foo:
             pass
@@ -73,31 +72,31 @@ class TestTransformExtras2(unittest.TestCase):
             _ = tr @ Foo()   # should bubble up NotImplemented → TypeError
 
 
-class TestTransformExtras(unittest.TestCase):
+class TestX_FORWARD_Z_UPExtras(unittest.TestCase):
 
     def test_T_property(self):
         """T should return the matrix transpose."""
         R = np.random.randn(4, 4)
-        tr = Transform(R, X_FORWARD_Z_UP)
-        np.testing.assert_array_equal(tr.T, R.T)
+        tr = X_FORWARD_Z_UP(R)
+        np.testing.assert_array_equal(tr.transpose().matrix, R.T)
 
     def test_matmul_with_array(self):
-        """__matmul__ with raw numpy array should apply the transform matrix."""
-        tr = Transform.from_values(translation=np.array([1, 2, 3]))
+        """__matmul__ with raw numpy array should apply the X_FORWARD_Z_UP matrix."""
+        tr = X_FORWARD_Z_UP.from_values(translation=np.array([1, 2, 3]))
         A = np.eye(4) * 2
         result = tr @ A
         np.testing.assert_array_equal(result, tr.matrix @ A)
 
     def test_matmul_frame_mismatch(self):
-        """__matmul__ between transforms in different frames should reframe second."""
+        """__matmul__ between X_FORWARD_Z_UPs in different frames should reframe second."""
         cs1 = X_FORWARD_Z_UP
-        cs2 = create_frame_convention(
+        cs2 = get_transform_type(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
-        A = Transform.from_values(translation=np.array(
-            [1, 0, 0]), coordinate_system=cs1)
-        B = Transform.from_values(translation=np.array(
-            [0, 2, 0]), coordinate_system=cs2)
+        A = cs1.from_values(translation=np.array(
+            [1, 0, 0]))
+        B = cs2.from_values(translation=np.array(
+            [0, 2, 0]))
 
         # the composition under test
         C = A @ B
@@ -107,45 +106,44 @@ class TestTransformExtras(unittest.TestCase):
             cs2, cs1)  # 3×3 ref-frame rotation
         T4 = np.eye(4, dtype=R3.dtype)             # lift to homogeneous
         T4[:3, :3] = R3
-        B_reframed = Transform(T4 @ B.matrix, cs1)
+        B_reframed = X_FORWARD_Z_UP(T4 @ B.matrix, cs1)
 
-        expected = Transform(A.matrix @ B_reframed.matrix, cs1)
+        expected = X_FORWARD_Z_UP(A.matrix @ B_reframed.matrix, cs1)
 
         np.testing.assert_array_equal(C.matrix, expected.matrix)
-        self.assertEqual(C.coordinate_system, cs1)
 
     def test_change_coordinate_system_reexpress_input(self):
         """
-        To get the *same world point* under a converted transform,
+        To get the *same world point* under a converted X_FORWARD_Z_UP,
         you must first re‐express your input in the new frame.
         """
         cs1 = X_FORWARD_Z_UP
-        cs2 = create_frame_convention(
+        cs2 = get_transform_type(
             Direction.LEFT, Direction.DOWN, Direction.BACKWARD
         )
-        tr = Transform.from_values(translation=np.array(
+        tr = X_FORWARD_Z_UP.from_values(translation=np.array(
             [5, 0, 0]), coordinate_system=cs1)
         p = np.array([1, 2, 3])
-        world = tr.transform_point(p)
+        world = tr.X_FORWARD_Z_UP_point(p)
 
         tr2 = tr.change_coordinate_system(cs2)
         # compute the coords in cs2 that represent the *same world point*:
         # world = tr2.rotation @ q + tr2.translation  ⇒  q = tr2.rotation.T @ (world - tr2.translation)
         q = tr2.rotation.T @ (world - tr2.translation)
-        world2 = tr2.transform_point(q)
+        world2 = tr2.X_FORWARD_Z_UP_point(q)
         np.testing.assert_allclose(world2, world, atol=1e-8)
 
     def test_roundtrip_inverse(self):
         """Both inverse() and inverse(inplace=True) should round-trip correctly."""
 
-        # a known rigid-body transform
+        # a known rigid-body X_FORWARD_Z_UP
         R = np.array([[0, -1, 0],
                       [1,  0, 0],
                       [0,  0, 1]], float)
         t = np.array([1.0, 2.0, 3.0])
 
         # ---- non-inplace ----
-        tr = Transform.from_values(translation=t, rotation=R)
+        tr = X_FORWARD_Z_UP.from_values(translation=t, rotation=R)
         orig = tr.matrix.copy()
 
         inv = tr.inverse()  # non-inplace
@@ -162,7 +160,7 @@ class TestTransformExtras(unittest.TestCase):
         np.testing.assert_allclose(inv2.matrix, orig, atol=1e-8)
 
         # ---- inplace ----
-        tr_ip = Transform.from_values(translation=t, rotation=R)
+        tr_ip = X_FORWARD_Z_UP.from_values(translation=t, rotation=R)
         orig_ip = tr_ip.matrix.copy()
 
         inv_ip = tr_ip.inverse(inplace=True)
@@ -178,8 +176,8 @@ class TestTransformExtras(unittest.TestCase):
         """Ensure non‐commutativity of scale and rotate is respected."""
         R = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
         S = np.array([2.0, 3.0, 4.0])
-        tr_sr = Transform.from_values().apply_scale(S).apply_rotation(R)
-        tr_rs = Transform.from_values().apply_rotation(R).apply_scale(S)
+        tr_sr = X_FORWARD_Z_UP().apply_scale(S).apply_rotation(R)
+        tr_rs = X_FORWARD_Z_UP().apply_rotation(R).apply_scale(S)
         # The resulting matrices should differ
         with self.assertRaises(AssertionError):
             np.testing.assert_array_equal(tr_sr.matrix, tr_rs.matrix)
@@ -187,18 +185,18 @@ class TestTransformExtras(unittest.TestCase):
 
 class TestFrameRegistry(unittest.TestCase):
     def test_basic_directions(self):
-        cs = create_frame_convention(
+        cs = get_transform_type(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
         # enum properties
-        self.assertEqual(cs.x, Direction.FORWARD)
-        self.assertEqual(cs.y, Direction.LEFT)
-        self.assertEqual(cs.z, Direction.UP)
+        self.assertEqual(cs.label_x(), Direction.FORWARD)
+        self.assertEqual(cs.label_y(), Direction.LEFT)
+        self.assertEqual(cs.label_z(), Direction.UP)
         # vector properties
-        self.assertTrue(np.all(cs.forward == np.array((1, 0, 0))))
-        self.assertTrue(np.all(cs.left == np.array((0, 1, 0))))
-        self.assertTrue(np.all(cs.up == np.array((0, 0, 1))))
-        self.assertTrue(cs.right_handed)
+        self.assertTrue(np.all(cs.basis_forward() == np.array((1, 0, 0))))
+        self.assertTrue(np.all(cs.basis_left() == np.array((0, 1, 0))))
+        self.assertTrue(np.all(cs.basis_up() == np.array((0, 0, 1))))
+        self.assertTrue(cs.is_right_handed())
 
     def test_from_directions_all_permutations(self):
         # all valid direction triples produce a byte in VALID_BYTES
@@ -207,8 +205,8 @@ class TestFrameRegistry(unittest.TestCase):
             for y in Direction:
                 for z in Direction:
                     try:
-                        cs = create_frame_convention(x, y, z)
-                    except KeyError:
+                        cs = get_transform_type(x, y, z)
+                    except ValueError:
                         continue
                     seen.add(cs)
         self.assertEqual(len(seen), 48)
@@ -221,13 +219,13 @@ class TestFrameRegistry(unittest.TestCase):
             frames = []
             for x, y, z in permutations(list(Direction), 3):
                 try:
-                    cs = create_frame_convention(x, y, z)
+                    cs = get_transform_type(x, y, z)
                 except KeyError:
                     continue
                 # determine handedness tag
-                fwd = cs.forward
-                lft = cs.left
-                upv = cs.up
+                fwd = cs.basis_forward()
+                lft = cs.basis_left()
+                upv = cs.basis_up()
                 det = np.linalg.det(np.stack((fwd, lft, upv), axis=1))
                 tag = "RH" if det > 0 else "LH"
                 frames.append((tag, cs))
@@ -259,29 +257,29 @@ class TestFrameRegistry(unittest.TestCase):
                                 f"[{i}->{j}] det(R)={detR}, expected {expected} (tags {tag1}->{tag2})")
 
 
-class TestTransform(unittest.TestCase):
+class TestX_FORWARD_Z_UP(unittest.TestCase):
     def setUp(self):
         self.cs = X_FORWARD_Z_UP
-        self.identity = Transform()
+        self.identity = X_FORWARD_Z_UP()
 
     def test_identity_matrix(self):
         np.testing.assert_array_equal(self.identity.matrix, np.eye(4))
 
     def test_from_values_translation(self):
         t = np.array([1.0, 2.0, 3.0])
-        tr = Transform.from_values(translation=t)
+        tr = X_FORWARD_Z_UP.from_values(translation=t)
         np.testing.assert_array_equal(tr.translation, t)
         np.testing.assert_array_equal(tr.rotation, np.eye(3))
 
     def test_from_values_rotation(self):
         R = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], float)
-        tr = Transform.from_values(rotation=R)
+        tr = X_FORWARD_Z_UP.from_values(rotation=R)
         np.testing.assert_array_equal(tr.rotation, R)
         np.testing.assert_array_equal(tr.translation, np.zeros(3))
 
     def test_from_values_scale(self):
         s = np.array([2.0, 3.0, 4.0])
-        tr = Transform.from_values(scale=s)
+        tr = X_FORWARD_Z_UP.from_values(scale=s)
         expected = np.diag([2.0, 3.0, 4.0, 1.0])
         np.testing.assert_array_equal(tr.matrix, expected)
 
@@ -297,7 +295,7 @@ class TestTransform(unittest.TestCase):
     def test_scale_method(self):
         s = np.array([2, 3, 4])
         tr = self.identity.apply_scale(s)
-        np.testing.assert_array_equal(tr.scaler, s)
+        np.testing.assert_array_equal(tr.scale, s)
 
     def test_inverse(self):
         # compose translate+rotate then invert
@@ -308,28 +306,29 @@ class TestTransform(unittest.TestCase):
         I = tr.matrix @ inv.matrix
         np.testing.assert_allclose(I, np.eye(4), atol=1e-8)
 
-    def test_transform_point_and_vector(self):
-        tr = Transform.from_values(translation=np.array([1, 2, 3]))
+    def test_X_FORWARD_Z_UP_point_and_vector(self):
+        tr = X_FORWARD_Z_UP.from_values(translation=np.array([1, 2, 3]))
         p = tr.transform_point(np.array([1, 1, 1]))
         self.assertTrue(np.allclose(p, [2, 3, 4]))
         v = tr.transform_vector(np.array([1, 0, 0]))
         self.assertTrue(np.allclose(v, [1, 0, 0]))  # unaffected by translation
 
     def test_change_coordinate_system(self):
-        cs1 = create_frame_convention(
+        cs1 = get_transform_type(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
-        cs2 = create_frame_convention(
+        cs2 = get_transform_type(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
-        tr = Transform(coordinate_system=cs1)
+        tr = X_FORWARD_Z_UP()
         tr2 = tr.change_coordinate_system(cs2)
+        np.testing.assert_allclose(
+            tr2.basis_matrix(), cs2.basis_matrix(), atol=1e-8)
         # new coordinate system should be cs2
-        self.assertEqual(tr2.coordinate_system, cs2)
 
-    def test_matmul_with_transform(self):
-        A = Transform.from_values(translation=np.array([1, 0, 0]))
-        B = Transform.from_values(translation=np.array([0, 2, 0]))
+    def test_matmul_with_X_FORWARD_Z_UP(self):
+        A = X_FORWARD_Z_UP.from_values(translation=np.array([1, 0, 0]))
+        B = X_FORWARD_Z_UP.from_values(translation=np.array([0, 2, 0]))
         C = A @ B
         np.testing.assert_array_equal(C.translation, [1, 2, 0])
 
@@ -337,9 +336,9 @@ class TestTransform(unittest.TestCase):
 class TestOrientTo(unittest.TestCase):
     def setUp(self):
         # identity pose at the origin, default forward = +X
-        self.tr = Transform()
+        self.tr = X_FORWARD_Z_UP()
 
-    def assertForward(self, tr: Transform, expected: np.ndarray, tol=1e-6):
+    def assertForward(self, tr: X_FORWARD_Z_UP, expected: np.ndarray, tol=1e-6):
         """Helper: check that tr.forward ≈ expected."""
         np.testing.assert_allclose(tr.rotation @ tr.coordinate_system.forward,
                                    expected, atol=tol)
@@ -376,9 +375,9 @@ class TestOrientTo(unittest.TestCase):
         det = np.linalg.det(tr2.rotation)
         self.assertAlmostEqual(det, +1.0, places=6)
 
-    def test_rotation_to_transform_target(self):
+    def test_rotation_to_X_FORWARD_Z_UP_target(self):
         # place a small translation on the target
-        Tgt = Transform.from_values(translation=np.array([0.0, 0.0, 7.0]))
+        Tgt = X_FORWARD_Z_UP.from_values(translation=np.array([0.0, 0.0, 7.0]))
         tr2 = self.tr.look_at(Tgt)
         # since target is straight “up” in world Z, forward vector points toward (0,0,7)
         # i.e. along Z axis
@@ -388,7 +387,7 @@ class TestOrientTo(unittest.TestCase):
 
     def test_preserves_translation(self):
         # start with a nonzero translation
-        tr = Transform.from_values(translation=np.array([4.0, 5.0, 6.0]))
+        tr = X_FORWARD_Z_UP.from_values(translation=np.array([4.0, 5.0, 6.0]))
         # target somewhere else
         target = np.array([4.0, 5.0, 10.0])
         tr2 = tr.look_at(target)
@@ -408,7 +407,7 @@ class TestOrientToInplace(unittest.TestCase):
     """Exercise the `inplace=True` branch of look_at."""
 
     def test_inplace_updates_and_returns_same_object(self):
-        tr = Transform()                       # faces +X
+        tr = X_FORWARD_Z_UP()                       # faces +X
         target = np.array([0.0, 8.0, 0.0])         # lies on +Y
         out_ref = tr.look_at(target, inplace=True)
 
@@ -425,7 +424,7 @@ class TestAzElRangeVertical(unittest.TestCase):
     """Straight‑up / straight‑down targets should yield az=0, |el|=90°."""
 
     def setUp(self):
-        self.origin = Transform()                   # at (0,0,0), +X fwd, +Z up
+        self.origin = X_FORWARD_Z_UP()                   # at (0,0,0), +X fwd, +Z up
 
     def test_straight_up(self):
         az, el, rng = self.origin.azimuth_elevation_to([0, 0, 5])
@@ -444,7 +443,8 @@ class TestAzElRangeOptions(unittest.TestCase):
     """Verify azimuth sign conventions and radian mode."""
 
     def setUp(self):
-        self.origin = Transform()                 # +X forward ; +Y left ; –Y right
+        # +X forward ; +Y left ; –Y right
+        self.origin = X_FORWARD_Z_UP()
         self.to_right = np.array([0.0, -10.0, 0.0])  # pure “right” direction
 
     def test_clockwise_vs_counterclockwise(self):
@@ -472,10 +472,10 @@ class TestAzElRangeOptions(unittest.TestCase):
 
 class TestAzElRangeExhaustive(unittest.TestCase):
     def setUp(self):
-        cs = create_frame_convention(
+        cs = get_transform_type(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
-        self.origin = Transform(coordinate_system=cs)
+        self.origin = X_FORWARD_Z_UP(coordinate_system=cs)
         # six cardinal directions, unit length
         self.targets = {
             'forward':  np.array(cs.forward),
@@ -569,7 +569,7 @@ class TestAzElRangeExhaustive(unittest.TestCase):
 class TestPhiThetaTo(unittest.TestCase):
     def setUp(self):
         # identity at origin, default frame X-forward, Z-up
-        self.tr = Transform()
+        self.tr = X_FORWARD_Z_UP()
 
     def test_default_cardinals(self):
         # (vector → expected φ,θ) in degrees, polar convention
@@ -628,7 +628,7 @@ class TestPhiThetaTo(unittest.TestCase):
 
 class TestLatLonTo(unittest.TestCase):
     def setUp(self):
-        self.tr = Transform()
+        self.tr = X_FORWARD_Z_UP()
 
     def test_default_cardinals(self):
         # (vector → expected lat,lon) in degrees

@@ -1,8 +1,12 @@
 # _polyframe.py
 
+# Written by: Nathan Spencer
+# Licensed under the Apache License, Version 2.0 (the "License")
+
 from numpy.linalg import qr as np_qr
 from numpy.linalg import det as np_det
 from numpy.linalg import norm as np_norm
+from numpy.linalg import svd as np_svd
 from numpy import diag as np_diag
 from numpy import asarray as np_asarray
 from numpy import allclose as np_allclose
@@ -49,7 +53,81 @@ _DIR_TO_VEC = {
 }
 
 
-@njit
+@njit(cache=True)
+def polar_rotation_svd(M: np.ndarray) -> np.ndarray:
+    """
+    Return the orthonormal rotation R from the polar decomposition M = R · P
+    using a single SVD call (U Σ Vᵀ).  Handles all edge cases:
+
+    * arbitrary scale, shear, or reflection in M
+    * singular / nearly singular M   → best-fit R is still defined
+    * det(R) enforced to +1 (proper rotation)
+    """
+    # 1) SVD – works for any real 3×3, even rank‑deficient
+    U, _, Vt = np_svd(M)          # M = U Σ Vᵀ
+
+    # 2) Draft rotation
+    R = U @ Vt                           # U Vᵀ is orthogonal; det may be −1
+
+    # 3) Force det(R)=+1  (avoid improper reflection)
+    if np_det(R) < 0.0:
+        # Flip sign of last column of U (equivalent to Σ33 → −Σ33)
+        U[:, 2] *= -1.0
+        R = U @ Vt                       # recompute with proper handedness
+
+    return R
+
+
+_TOL_ORTHO = 1e-6
+_TOL_DET = 1e-6
+
+
+@njit(cache=True)
+def pure_rotation_if_possible(M: np.ndarray) -> np.ndarray:
+    """
+    Fast path:  ▸ If M is already a proper rotation (orthonormal, det≈+1)
+                ▸ return it unchanged.
+    Slow path:  ▸ Otherwise perform SVD‑based polar decomposition and
+                  return the R factor.
+    """
+    # --- 1.  column norms --------------------------------------------------
+    c0 = M[:, 0]
+    c1 = M[:, 1]
+    c2 = M[:, 2]
+
+    n0 = c0[0]*c0[0] + c0[1]*c0[1] + c0[2]*c0[2]
+    n1 = c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2]
+    n2 = c2[0]*c2[0] + c2[1]*c2[1] + c2[2]*c2[2]
+
+    if (abs(n0-1.0) > _TOL_ORTHO or
+        abs(n1-1.0) > _TOL_ORTHO or
+            abs(n2-1.0) > _TOL_ORTHO):
+        return polar_rotation_svd(M)          # scale present
+
+    # --- 2.  cross‑column orthogonality -----------------------------------
+    d01 = c0[0]*c1[0] + c0[1]*c1[1] + c0[2]*c1[2]
+    d02 = c0[0]*c2[0] + c0[1]*c2[1] + c0[2]*c2[2]
+    d12 = c1[0]*c2[0] + c1[1]*c2[1] + c1[2]*c2[2]
+
+    if (abs(d01) > _TOL_ORTHO or
+        abs(d02) > _TOL_ORTHO or
+            abs(d12) > _TOL_ORTHO):
+        return polar_rotation_svd(M)          # shear / skew
+
+    # --- 3.  determinant +1 ? --------------------------------------------
+    detM = (
+        M[0, 0]*(M[1, 1]*M[2, 2] - M[1, 2]*M[2, 1])
+        - M[0, 1]*(M[1, 0]*M[2, 2] - M[1, 2]*M[2, 0])
+        + M[0, 2]*(M[1, 0]*M[2, 1] - M[1, 1]*M[2, 0])
+    )
+    if abs(detM - 1.0) > _TOL_DET:
+        return polar_rotation_svd(M)          # reflection or numeric drift
+
+    # --- Already a clean rotation ----------------------------------------
+    return M
+
+
+@njit(cache=True)
 def quaternion_to_rotation(quaternion: ndarray, w_last: bool = True) -> ndarray:
     """
     Convert a quaternion to a 3x3 rotation matrix.
@@ -93,7 +171,7 @@ def quaternion_to_rotation(quaternion: ndarray, w_last: bool = True) -> ndarray:
     return R
 
 
-@njit
+@njit(cache=True)
 def rotation_to_quaternion(rotation: ndarray, w_last: bool = True) -> ndarray:
     """
     Convert a 3x3 rotation matrix to a quaternion.
@@ -148,7 +226,7 @@ def rotation_to_quaternion(rotation: ndarray, w_last: bool = True) -> ndarray:
     return out
 
 
-@njit
+@njit(cache=True)
 def rotation_to_euler(rotation: ndarray, degrees: bool = True) -> tuple[float, float, float]:
     """
     Convert a 3x3 rotation matrix to (roll-pitch-yaw) Euler angles.
@@ -177,7 +255,7 @@ def rotation_to_euler(rotation: ndarray, degrees: bool = True) -> tuple[float, f
     return roll, pitch, yaw
 
 
-@njit
+@njit(cache=True)
 def quaternion_to_euler(
     quaternion: ndarray,
     w_last: bool = True,
@@ -190,7 +268,7 @@ def quaternion_to_euler(
     return rotation_to_euler(R, degrees)
 
 
-@njit
+@njit(cache=True)
 def euler_to_rotation(
         roll: float,
         pitch: float,
@@ -224,7 +302,7 @@ def euler_to_rotation(
     return R
 
 
-@njit
+@njit(cache=True)
 def euler_to_quaternion(
     roll: float,
     pitch: float,
@@ -259,7 +337,7 @@ def euler_to_quaternion(
     return out
 
 
-@njit
+@njit(cache=True)
 def rotation_to(
     target_vector: ndarray,
     current_R: ndarray,
@@ -314,7 +392,7 @@ def rotation_to(
     return np_dot(R_delta, current_R)
 
 
-@njit
+@njit(cache=True)
 def azimuth_elevation_to(target_vector: ndarray, up: ndarray, lateral: ndarray, forward: ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float]:
     """
     Calculate azimuth and elevation from origin to target
@@ -370,7 +448,7 @@ def azimuth_elevation_to(target_vector: ndarray, up: ndarray, lateral: ndarray, 
     return az_rad, el_rad
 
 
-@njit
+@njit(cache=True)
 def phi_theta_to(
     target_vector: ndarray,
     up: ndarray,
@@ -421,7 +499,7 @@ def phi_theta_to(
     return phi, theta
 
 
-@njit
+@njit(cache=True)
 def latitude_longitude_to(
     target_vector: ndarray,
     up: ndarray,
@@ -681,7 +759,7 @@ class Transform:
         Returns:
             The upper-left 3x3 of `matrix`.
         """
-        return self.matrix[:3, :3]
+        return pure_rotation_if_possible(self.matrix[:3, :3])
 
     @property
     def translation(self) -> ndarray:
@@ -702,16 +780,6 @@ class Transform:
             Length-3 array of Euclidean norms of each column of `rotation`.
         """
         return np_norm(self.matrix[:3, :3], axis=0)
-
-    @property
-    def scale_matrix(self) -> ndarray:
-        """
-        Compute the scale matrix from the scale factors.
-
-        Returns:
-            A diagonal matrix with the scale factors on the diagonal.
-        """
-        return np_diag(self.matrix[:3, :3])
 
     @property
     def perspective(self) -> ndarray:
@@ -1146,7 +1214,7 @@ class Transform:
         # 3) call into our compiled routine
         return rotation_to(
             target_vector,
-            self.matrix[:3, :3],
+            self.rotation,
             self.basis_forward()
         )
 
@@ -1173,7 +1241,7 @@ class Transform:
         return rotation_to_quaternion(
             rotation_to(
                 target_vector,
-                self.matrix[:3, :3],
+                self.rotation,
                 self.basis_forward()
             ),
             w_last=w_last
@@ -1203,7 +1271,7 @@ class Transform:
         return rotation_to_euler(
             rotation_to(
                 target_vector,
-                self.matrix[:3, :3],
+                self.rotation,
                 self.basis_forward()
             ),
             degrees=degrees
@@ -1347,7 +1415,7 @@ class Transform:
         # 3) call into our compiled routine
         R_new = rotation_to(
             target_vector,
-            self.matrix[:3, :3],
+            self.rotation,
             self.basis_forward()
         )
 
@@ -1698,7 +1766,7 @@ class Transform:
         Returns:
             A 4-element array representing the quaternion.
         """
-        return rotation_to_quaternion(self.matrix[:3, :3], w_last=w_last)
+        return rotation_to_quaternion(self.rotation, w_last=w_last)
 
     def to_euler_angles(self, degrees: bool = True) -> Tuple[float, float, float]:
         """
@@ -1707,7 +1775,7 @@ class Transform:
         Returns:
             A 3-element tuple representing the Euler angles.
         """
-        return rotation_to_euler(self.matrix[:3, :3], degrees=degrees)
+        return rotation_to_euler(self.rotation, degrees=degrees)
 
     def to_list(self) -> List[float]:
         """
@@ -1831,12 +1899,22 @@ def _create_frame_convention(
         raise ValueError("x, y, z must be orthogonal Directions")
 
     # define the basis vectors for the class type
-    def x_fn(self): return self.matrix[:3, 0]
-    def x_inv_fn(self): return -self.matrix[:3, 0]
-    def y_fn(self): return self.matrix[:3, 1]
-    def y_inv_fn(self): return -self.matrix[:3, 1]
-    def z_fn(self): return self.matrix[:3, 2]
-    def z_inv_fn(self): return -self.matrix[:3, 2]
+    def x_fn(self): return pure_rotation_if_possible(
+        self.matrix[:3, :3])[:3, 0]
+
+    def x_inv_fn(self): return - \
+        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 0]
+
+    def y_fn(self): return pure_rotation_if_possible(
+        self.matrix[:3, :3])[:3, 1]
+
+    def y_inv_fn(self): return - \
+        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 1]
+
+    def z_fn(self): return pure_rotation_if_possible(
+        self.matrix[:3, :3])[:3, 2]
+    def z_inv_fn(self): return - \
+        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 2]
 
     if x == Direction.FORWARD:
         forward = x_fn

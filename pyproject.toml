@@ -4,7 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polyframe"
-version = "0.1.5"
 description = "A modern python library for 3D homogenous transforms and coordinate system utilities."
 readme = "README.md"
 license = { file = "LICENSE" }

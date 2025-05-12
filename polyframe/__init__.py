@@ -2,7 +2,7 @@
 Polyframe: A Python library for 3D transformations and geometry using homogenous matrices, with a focus on performance 
 and ease of use, while allowing users to define their own coordinate frames.
 
-More information is available at https://github.com/nsspencer/Polyframe
+More information is available at https://github.com/nsspencer/polyframe
 """
 
 __version__ = version = "0.1.6"

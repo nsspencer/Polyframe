@@ -18,22 +18,22 @@ from numpy import array as np_array
 from numpy import dot as np_dot
 from numpy import eye as np_eye
 from numpy import cross as np_cross
+from numpy import array2string as np_array2string
 from numpy import float64 as np_float64
 from numpy import ndarray
 import numpy as np
 
 from typing import Union, Optional, List, Tuple, Type
 from dataclasses import dataclass, field
-
-from numba import njit
 from enum import Enum
+from numba import njit
 
 from numba.core.errors import NumbaPerformanceWarning
 import warnings
 warnings.filterwarnings("ignore", category=NumbaPerformanceWarning)
 
 # preallocate the identity matrix for performance
-EYE4 = np_eye(4, dtype=np_float64)
+_EYE4 = np_eye(4, dtype=np_float64)
 
 
 class Direction(Enum):
@@ -46,7 +46,7 @@ class Direction(Enum):
 
 
 # map each Direction to its unit‐vector in the *world* frame
-DIR_TO_VEC = {
+_DIR_TO_VEC = {
     Direction.FORWARD:  np_array([1,  0,  0]),
     Direction.BACKWARD: np_array([-1,  0,  0]),
     Direction.LEFT:    np_array([0,  1,  0]),
@@ -475,7 +475,7 @@ class Transform:
         matrix (ndarray): 4x4 transformation matrix.
     """
 
-    matrix: ndarray = field(default_factory=lambda: EYE4.copy())
+    matrix: ndarray = field(default_factory=lambda: _EYE4.copy())
 
     @classmethod
     def identity(cls) -> "Transform":
@@ -485,7 +485,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` is the identity matrix.
         """
-        return cls(EYE4.copy())
+        return cls(_EYE4.copy())
 
     @classmethod
     def from_values(
@@ -507,7 +507,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes T·R·S.
         """
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         if translation is not None:
             mat[:3, 3] = translation
         if rotation is not None:
@@ -542,7 +542,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes T.
         """
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         mat[:3, 3] = translation
         return cls(mat)
 
@@ -560,7 +560,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes R.
         """
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         mat[:3, :3] = rotation
         return cls(mat)
 
@@ -589,7 +589,7 @@ class Transform:
         else:
             raise ValueError(f"Invalid scale shape: {shape}")
 
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         mat[:3, :3] = S
         return cls(mat)
 
@@ -609,7 +609,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes R.
         """
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         mat[:3, :3] = quaternion_to_rotation(quaternion, w_last=w_last)
         return cls(mat)
 
@@ -633,7 +633,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` encodes R.
         """
-        mat = EYE4.copy()
+        mat = _EYE4.copy()
         mat[:3, :3] = euler_to_rotation(roll, pitch, yaw, degrees=degrees)
         return cls(mat)
 
@@ -1821,7 +1821,7 @@ class Transform:
         return (type(self), (self.matrix.copy(),))
 
 
-def create_frame_convention(
+def _create_frame_convention(
     x: Direction, y: Direction, z: Direction
 ) -> Type[Transform]:
     # sanity check
@@ -1829,14 +1829,15 @@ def create_frame_convention(
         raise ValueError("x, y, z must be three distinct Directions")
 
     # compute handedness
-    x_vec = DIR_TO_VEC[x]
-    y_vec = DIR_TO_VEC[y]
-    z_vec = DIR_TO_VEC[z]
+    x_vec = _DIR_TO_VEC[x]
+    y_vec = _DIR_TO_VEC[y]
+    z_vec = _DIR_TO_VEC[z]
     is_right_handed = bool(np.allclose(np.cross(x_vec, y_vec), z_vec))
     # ensure orthobonality
     if not np.allclose(np.dot(x_vec, y_vec), 0) or not np.allclose(np.dot(x_vec, z_vec), 0) or not np.allclose(np.dot(y_vec, z_vec), 0):
         raise ValueError("x, y, z must be orthogonal Directions")
 
+    # define the basis vectors for the class type
     def x_fn(self): return self.matrix[:3, 0]
     def x_inv_fn(self): return -self.matrix[:3, 0]
     def y_fn(self): return self.matrix[:3, 1]
@@ -1958,14 +1959,14 @@ def create_frame_convention(
     return dataclass(NewFrame, slots=True)
 
 
-FRAME_REGISTRY = {}
+_FRAME_REGISTRY = {}
 for x in Direction:
     for y in Direction:
         for z in Direction:
             try:
-                frame = create_frame_convention(x, y, z)
+                frame = _create_frame_convention(x, y, z)
                 globals()[frame.__name__] = frame
-                FRAME_REGISTRY[(x, y, z)] = frame
+                _FRAME_REGISTRY[(x, y, z)] = frame
             except ValueError:
                 pass
 
@@ -1988,14 +1989,13 @@ def get_transform_type(x: Direction, y: Direction, z: Direction) -> Type[Transfo
     Transform
         The transform type for the given frame convention.
     """
-    val = FRAME_REGISTRY.get((x, y, z), None)
+    val = _FRAME_REGISTRY.get((x, y, z), None)
     if val is None:
         raise ValueError(
             f"Frame convention {x}, {y}, {z} not valid. Must be orthogonal.")
     return val
 
 
-# import helpers
 __all__ = [
     "Direction",
     "Transform",

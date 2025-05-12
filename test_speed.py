@@ -1,9 +1,9 @@
-from polyframe import Direction, Transform, create_frame_convention
+from polyframe import Direction, define_convention
 import timeit
 import numpy as np
 
 
-MyTransform = create_frame_convention(
+MyTransform = define_convention(
     Direction.FORWARD, Direction.LEFT, Direction.UP)
 
 
@@ -12,16 +12,6 @@ print(timeit.timeit(lambda: MyTransform(), number=1_000_000))
 translation = np.array([1, 0, 0])
 print(timeit.timeit(lambda: MyTransform.from_translation(
     translation), number=1_000_000))
-
-valid_frames = []
-for x in Direction:
-    for y in Direction:
-        for z in Direction:
-            try:
-                convention = create_frame_convention(x, y, z)
-                valid_frames.append(convention)
-            except ValueError:
-                pass
 
 t = MyTransform()
 t.apply_translation(translation, inplace=True)

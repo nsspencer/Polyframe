@@ -2,17 +2,17 @@
 import unittest
 import numpy as np
 import pickle
-from polyframe import Direction, get_transform_type
+from polyframe import Direction, define_convention
 from polyframe.utils import phi_theta_to, latitude_longitude_to
 
-X_FORWARD_Z_UP = get_transform_type(
+X_FORWARD_Z_UP = define_convention(
     Direction.FORWARD, Direction.LEFT, Direction.UP
 )
 
 
 class TestFrameRegistryExtras(unittest.TestCase):
     def test_str_and_repr(self):
-        cs = get_transform_type(
+        cs = define_convention(
             Direction.UP, Direction.RIGHT, Direction.BACKWARD)
         # Both __str__ and __repr__ should mention the same triple
         self.assertIn("UP", str(cs))
@@ -21,7 +21,7 @@ class TestFrameRegistryExtras(unittest.TestCase):
 
     def test_pickle_roundtrip(self):
         # Make sure the CCS is pickleable and comes back equal
-        cs = get_transform_type(
+        cs = define_convention(
             Direction.FORWARD, Direction.LEFT, Direction.DOWN)
         s = pickle.dumps(cs)
         cs2 = pickle.loads(s)
@@ -46,7 +46,7 @@ class TestX_FORWARD_Z_UPExtras2(unittest.TestCase):
         """
         cs1 = X_FORWARD_Z_UP
         # pick a frame that's rotated 90° about Z
-        cs2 = get_transform_type(
+        cs2 = define_convention(
             Direction.LEFT, Direction.BACKWARD, Direction.UP
         )
         tr = X_FORWARD_Z_UP.from_values(translation=np.array(
@@ -90,7 +90,7 @@ class TestX_FORWARD_Z_UPExtras(unittest.TestCase):
     def test_matmul_frame_mismatch(self):
         """__matmul__ between X_FORWARD_Z_UPs in different frames should reframe second."""
         cs1 = X_FORWARD_Z_UP
-        cs2 = get_transform_type(
+        cs2 = define_convention(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
         A = cs1.from_values(translation=np.array(
@@ -118,7 +118,7 @@ class TestX_FORWARD_Z_UPExtras(unittest.TestCase):
         you must first re‐express your input in the new frame.
         """
         cs1 = X_FORWARD_Z_UP
-        cs2 = get_transform_type(
+        cs2 = define_convention(
             Direction.LEFT, Direction.DOWN, Direction.BACKWARD
         )
         tr = X_FORWARD_Z_UP.from_values(translation=np.array(
@@ -185,7 +185,7 @@ class TestX_FORWARD_Z_UPExtras(unittest.TestCase):
 
 class TestFrameRegistry(unittest.TestCase):
     def test_basic_directions(self):
-        cs = get_transform_type(
+        cs = define_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
         # enum properties
@@ -205,7 +205,7 @@ class TestFrameRegistry(unittest.TestCase):
             for y in Direction:
                 for z in Direction:
                     try:
-                        cs = get_transform_type(x, y, z)
+                        cs = define_convention(x, y, z)
                     except ValueError:
                         continue
                     seen.add(cs)
@@ -219,7 +219,7 @@ class TestFrameRegistry(unittest.TestCase):
             frames = []
             for x, y, z in permutations(list(Direction), 3):
                 try:
-                    cs = get_transform_type(x, y, z)
+                    cs = define_convention(x, y, z)
                 except KeyError:
                     continue
                 # determine handedness tag
@@ -314,10 +314,10 @@ class TestX_FORWARD_Z_UP(unittest.TestCase):
         self.assertTrue(np.allclose(v, [1, 0, 0]))  # unaffected by translation
 
     def test_change_coordinate_system(self):
-        cs1 = get_transform_type(
+        cs1 = define_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
-        cs2 = get_transform_type(
+        cs2 = define_convention(
             Direction.RIGHT, Direction.BACKWARD, Direction.UP
         )
         tr = X_FORWARD_Z_UP()
@@ -472,7 +472,7 @@ class TestAzElRangeOptions(unittest.TestCase):
 
 class TestAzElRangeExhaustive(unittest.TestCase):
     def setUp(self):
-        cs = get_transform_type(
+        cs = define_convention(
             Direction.FORWARD, Direction.LEFT, Direction.UP
         )
         self.origin = X_FORWARD_Z_UP(coordinate_system=cs)

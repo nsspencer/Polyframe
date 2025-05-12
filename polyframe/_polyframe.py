@@ -7,7 +7,9 @@ from numpy.linalg import qr as np_qr
 from numpy.linalg import det as np_det
 from numpy.linalg import norm as np_norm
 from numpy.linalg import svd as np_svd
+from numpy.linalg import inv as np_inv
 from numpy import diag as np_diag
+from numpy import shape as np_shape
 from numpy import asarray as np_asarray
 from numpy import allclose as np_allclose
 from numpy import append as np_append
@@ -54,7 +56,24 @@ _DIR_TO_VEC = {
 
 
 @njit(cache=True)
-def polar_rotation_svd(M: np.ndarray) -> np.ndarray:
+def decompose_scale_shear(mat3: ndarray) -> tuple[ndarray, ndarray]:
+    """
+    Split the affine block A = R · P into
+        S = (sx,sy,sz)      (pure scale)
+        H = S⁻¹ · P             (unit-diagonal shear)
+    Returns S, H.
+    """
+    R = pure_rotation_if_possible(mat3)
+    # polar “stretch” block
+    P = R.T @ mat3
+    # S⁻¹·P   (unit diag by construction)
+    S = np_diag(P)
+    H = np.linalg.solve(np_diag(S), P)
+    return S, H
+
+
+@njit(cache=True)
+def polar_rotation_svd(M: ndarray) -> ndarray:
     """
     Return the orthonormal rotation R from the polar decomposition M = R · P
     using a single SVD call (U Σ Vᵀ).  Handles all edge cases:
@@ -83,7 +102,7 @@ _TOL_DET = 1e-6
 
 
 @njit(cache=True)
-def pure_rotation_if_possible(M: np.ndarray) -> np.ndarray:
+def pure_rotation_if_possible(M: ndarray) -> ndarray:
     """
     Fast path:  ▸ If M is already a proper rotation (orthonormal, det≈+1)
                 ▸ return it unchanged.
@@ -556,7 +575,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` is the identity matrix.
         """
-        return cls(_EYE4.copy())
+        return cls()
 
     @classmethod
     def from_values(
@@ -564,111 +583,44 @@ class Transform:
         translation: Optional[Union[ndarray, List, Tuple]] = None,
         rotation: Optional[Union[ndarray, List, Tuple]] = None,
         scale: Optional[Union[ndarray, List, Tuple]] = None,
+        shear: Optional[Union[ndarray, List, Tuple]] = None,
         perspective: Optional[Union[ndarray, List, Tuple]] = None,
     ) -> "Transform":
         """
-        Create a Transform by assembling translation, rotation, and scale into a 4x4 matrix.
+        Create a Transform by assembling translation, rotation, scale, shear, and perspective into a 4x4 matrix.
 
         Args:
             translation: length-3 array to place in last column.
             rotation: 3x3 rotation matrix to place in upper-left.
             scale: length-3 scale factors applied along the diagonal.
+            shear: 3x3 shear matrix to place in upper-left.
             perspective: length-4 perspective array.
 
         Returns:
-            A new Transform whose `matrix` encodes T·R·S.
+            A new Transform whose `matrix` encodes the provided information.
         """
-        mat = _EYE4.copy()
+        instance = cls()
         if translation is not None:
-            mat[:3, 3] = translation
+            instance.set_translation(translation, inplace=True)
         if rotation is not None:
-            mat[:3, :3] = rotation
+            instance.set_rotation(rotation, inplace=True)
         if scale is not None:
-            shape = np.shape(scale)
-            if shape == (1,):
-                s = float(scale[0])
-                S = np_diag([s, s, s])
-            elif shape == (3,):
-                S = np_diag(scale)
-            elif shape == (3, 3):
-                S = scale
-            else:
-                raise ValueError(f"Invalid scale shape: {shape}")
-            mat[:3, :3] = mat[:3, :3] @ S
+            instance.set_scale(scale, inplace=True)
+        if shear is not None:
+            instance.set_shear(shear, inplace=True)
         if perspective is not None:
-            mat[3, :] = perspective
-        return cls(mat)
-
-    @classmethod
-    def from_translation(
-        cls,
-        translation: Union[ndarray, List, Tuple],
-    ) -> "Transform":
-        """
-        Create a Transform from a translation vector.
-
-        Args:
-            translation: length-3 array to place in last column.
-
-        Returns:
-            A new Transform whose `matrix` encodes T.
-        """
-        mat = _EYE4.copy()
-        mat[:3, 3] = translation
-        return cls(mat)
-
-    @classmethod
-    def from_rotation(
-        cls,
-        rotation: ndarray,
-    ) -> "Transform":
-        """
-        Create a Transform from a rotation matrix.
-
-        Args:
-            rotation: 3x3 rotation matrix to place in upper-left.
-
-        Returns:
-            A new Transform whose `matrix` encodes R.
-        """
-        mat = _EYE4.copy()
-        mat[:3, :3] = rotation
-        return cls(mat)
-
-    @classmethod
-    def from_scale(
-        cls,
-        scale: Union[ndarray, List, Tuple],
-    ) -> "Transform":
-        """
-        Create a Transform from a scale vector.
-
-        Args:
-            scale: length-3 array to place in diagonal.
-
-        Returns:
-            A new Transform whose `matrix` encodes S.
-        """
-        shape = np.shape(scale)
-        if shape == (1,):
-            s = float(scale[0])
-            S = np_diag([s, s, s])
-        elif shape == (3,):
-            S = np_diag(scale)
-        elif shape == (3, 3):
-            S = scale
-        else:
-            raise ValueError(f"Invalid scale shape: {shape}")
-
-        mat = _EYE4.copy()
-        mat[:3, :3] = S
-        return cls(mat)
+            instance.set_perspective(perspective, inplace=True)
+        return instance
 
     @classmethod
     def from_quaternion(
         cls,
         quaternion: ndarray,
         w_last: bool = True,
+        translation: Optional[Union[ndarray, List, Tuple]] = None,
+        scale: Optional[Union[ndarray, List, Tuple]] = None,
+        shear: Optional[Union[ndarray, List, Tuple]] = None,
+        perspective: Optional[Union[ndarray, List, Tuple]] = None,
     ) -> "Transform":
         """
         Create a Transform from a quaternion.
@@ -676,13 +628,15 @@ class Transform:
         Args:
             quaternion: 4-element array representing the quaternion.
             w_last: if True, the quaternion is in [x, y, z, w] format.
+            translation: length-3 array to place in last column.
+            scale: length-3 scale factors applied along the diagonal.
+            shear: 3x3 shear matrix to place in upper-left.
+            perspective: length-4 perspective array.
 
         Returns:
             A new Transform whose `matrix` encodes R.
         """
-        mat = _EYE4.copy()
-        mat[:3, :3] = quaternion_to_rotation(quaternion, w_last=w_last)
-        return cls(mat)
+        return cls.from_values(translation=translation, rotation=quaternion_to_rotation(quaternion, w_last=w_last), scale=scale, shear=shear, perspective=perspective)
 
     @classmethod
     def from_euler_angles(
@@ -691,6 +645,10 @@ class Transform:
         pitch: float,
         yaw: float,
         degrees: bool = True,
+        translation: Optional[Union[ndarray, List, Tuple]] = None,
+        scale: Optional[Union[ndarray, List, Tuple]] = None,
+        shear: Optional[Union[ndarray, List, Tuple]] = None,
+        perspective: Optional[Union[ndarray, List, Tuple]] = None,
     ) -> "Transform":
         """
         Create a Transform from Euler angles.
@@ -700,13 +658,16 @@ class Transform:
             pitch: rotation around y-axis.
             yaw: rotation around z-axis.
             degrees: if True, angles are in degrees, else radians.
+            translation: length-3 array to place in last column.
+            scale: length-3 scale factors applied along the diagonal.
+            shear: 3x3 shear matrix to place in upper-left.
+            perspective: length-4 perspective array.
 
         Returns:
             A new Transform whose `matrix` encodes R.
         """
-        mat = _EYE4.copy()
-        mat[:3, :3] = euler_to_rotation(roll, pitch, yaw, degrees=degrees)
-        return cls(mat)
+        return cls.from_values(translation=translation, rotation=euler_to_rotation(
+            roll, pitch, yaw, degrees=degrees), scale=scale, shear=shear, perspective=perspective)
 
     @classmethod
     def from_flat_array(
@@ -724,7 +685,7 @@ class Transform:
         """
         if flat_array.shape != (16,):
             raise ValueError(f"Invalid flat array shape: {flat_array.shape}")
-        flat_array = np.asarray(flat_array, dtype=np_float64)
+        flat_array = np_asarray(flat_array, dtype=np_float64)
         mat = flat_array.reshape((4, 4))
         return cls(mat)
 
@@ -752,16 +713,6 @@ class Transform:
     #
 
     @property
-    def rotation(self) -> ndarray:
-        """
-        Extract the 3x3 rotation submatrix.
-
-        Returns:
-            The upper-left 3x3 of `matrix`.
-        """
-        return pure_rotation_if_possible(self.matrix[:3, :3])
-
-    @property
     def translation(self) -> ndarray:
         """
         Extract the translation vector.
@@ -772,14 +723,38 @@ class Transform:
         return self.matrix[:3, 3]
 
     @property
-    def scale(self) -> ndarray:
+    def rotation(self) -> ndarray:
         """
-        Compute per-axis scale from the rotation columns' norms.
+        Extract the 3x3 rotation submatrix.
 
         Returns:
-            Length-3 array of Euclidean norms of each column of `rotation`.
+            The upper-left 3x3 of `matrix`.
         """
-        return np_norm(self.matrix[:3, :3], axis=0)
+        return pure_rotation_if_possible(self.matrix[:3, :3])
+
+    @property
+    def scale(self) -> ndarray:
+        """
+        Compute and return the scale factors from the object's transformation matrix.
+
+        Returns the scale portion of the upper-left 3x3 decomposition.
+
+        Returns:
+            numpy.ndarray: A 1D array containing the scale factors along the x, y, and z axes.
+        """
+        return decompose_scale_shear(self.matrix[:3, :3])[0]
+
+    @property
+    def shear(self) -> ndarray:
+        """
+        Compute and return the shear component of the 3x3 transformation matrix.
+
+        Returns the shear portion of the upper-left 3x3 decomposition.
+
+        Returns:
+            numpy.ndarray: The 3x3 shear component extracted from the transformation matrix.
+        """
+        return decompose_scale_shear(self.matrix[:3, :3])[1]
 
     @property
     def perspective(self) -> ndarray:
@@ -806,13 +781,9 @@ class Transform:
         Returns:
             Transform with updated translation.
         """
-        if inplace:
-            self.matrix[:3, 3] += translation
-            return self
-
-        new = self.matrix.copy()
-        new[:3, 3] += translation
-        return self.__class__(new)
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, 3] += translation
+        return self if inplace else self.__class__(mat)
 
     def apply_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -825,13 +796,12 @@ class Transform:
         Returns:
             Transform with updated rotation.
         """
-        if inplace:
-            self.matrix[:3, :3] = rotation @ self.matrix[:3, :3]
-            return self
-
-        new = self.matrix.copy()
-        new[:3, :3] = rotation @ self.matrix[:3, :3]
-        return self.__class__(new)
+        R = self.rotation                          # already the polar R
+        P = R.T @ self.matrix[:3, :3]              # hence P = Rᵀ (R·P)
+        new_block = rotation @ R @ P                # (Q · R) P
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = new_block
+        return self if inplace else self.__class__(mat)
 
     def apply_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "Transform":
         """
@@ -844,14 +814,7 @@ class Transform:
         Returns:
             Transform with updated rotation.
         """
-        R = quaternion_to_rotation(quaternion, w_last=w_last)
-        if inplace:
-            self.matrix[:3, :3] = R @ self.matrix[:3, :3]
-            return self
-
-        new = self.matrix.copy()
-        new[:3, :3] = R @ self.matrix[:3, :3]
-        return self.__class__(new)
+        return self.apply_rotation(quaternion_to_rotation(quaternion, w_last=w_last), inplace=inplace)
 
     def apply_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
         """
@@ -864,14 +827,7 @@ class Transform:
         Returns:
             Transform with updated rotation.
         """
-        R = euler_to_rotation(roll, pitch, yaw, degrees=degrees)
-        if inplace:
-            self.matrix[:3, :3] = R @ self.matrix[:3, :3]
-            return self
-
-        new = self.matrix.copy()
-        new[:3, :3] = R @ self.matrix[:3, :3]
-        return self.__class__(new)
+        return self.apply_rotation(euler_to_rotation(roll, pitch, yaw, degrees=degrees), inplace=inplace)
 
     def apply_scale(self, scale: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -884,24 +840,49 @@ class Transform:
         Returns:
             Transform with updated scale.
         """
-        shape = np.shape(scale)
-        if shape == (1,):
-            s = float(scale[0])
-            S = np_diag([s, s, s])
-        elif shape == (3,):
-            S = np_diag(scale)
-        elif shape == (3, 3):
-            S = scale
-        else:
+        shape = np_shape(scale)
+        if shape == (3,):
             raise ValueError(f"Invalid scale shape: {shape}")
 
-        if inplace:
-            self.matrix[:3, :3] = self.matrix[:3, :3] @ S      # post‑mult
-            return self
+        R = self.rotation                          # already the polar R
+        P = R.T @ self.matrix[:3, :3]              # hence P = Rᵀ (R·P)
+        P_new = P @ np_diag(scale)                 # keep orientation
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = R @ P_new
+        return self if inplace else self.__class__(mat)
 
-        new = self.matrix.copy()
-        new[:3, :3] = new[:3, :3] @ S      # post‑mult
-        return self.__class__(new)
+    def apply_shear(self, shear: ndarray, *, inplace=False) -> "Transform":
+        """
+        Apply a shear transformation to the current affine block in local space.
+
+        This method post-multiplies the current 3x3 linear (affine) submatrix of the transformation matrix
+        with the provided shear matrix. The shear is applied in the object's local space without altering
+        the scaling of the axes (i.e., each axis retains its current length).
+
+        Parameters
+        ----------
+        shear : ndarray
+            A 3x3 shear matrix that must have a unit diagonal (i.e., np.diag(shear) == [1, 1, 1]).
+        inplace : bool, optional
+            If True, modifies the transformation matrix in place. If False, the transformation matrix is copied,
+            and a new instance of the transformation is returned. Default is False.
+
+        Returns
+        -------
+        Transform
+            The updated transformation instance. Returns `self` if inplace is True; otherwise, returns a new instance
+            with the modified matrix.
+
+        Raises
+        ------
+        ValueError
+            If `shear` does not have a shape of (3, 3) or if its diagonal elements are not all ones.
+        """
+        if np_shape(shear) != (3, 3) or not np_allclose(np_diag(shear), 1):
+            raise ValueError("shear must be 3x3 with unit diagonal")
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = mat[:3, :3] @ shear
+        return self if inplace else self.__class__(mat)
 
     def apply_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -914,13 +895,9 @@ class Transform:
         Returns:
             Transform with updated perspective.
         """
-        if inplace:
-            self.matrix[3, :] += perspective
-            return self
-
-        new = self.matrix.copy()
-        new[3, :] += perspective
-        return self.__class__(new)
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[3, :] += perspective
+        return self if inplace else self.__class__(mat)
 
     #########
     # Setter methods
@@ -929,12 +906,15 @@ class Transform:
     @rotation.setter
     def rotation(self, value: ndarray) -> None:
         """
-        Set the rotation submatrix.
+        Assign a new pure-rotation R_new but preserve the original P = Rᵀ·(R·P).
 
         Args:
-            value: 3x3 matrix to set as rotation.
+            value: 3x3 rotation matrix to set as rotation.
         """
-        self.matrix[:3, :3] = value
+        # current R and P
+        P = self.rotation.T @ self.matrix[:3, :3]
+        # write back R_new·P
+        self.matrix[:3, :3] = value @ P
 
     @translation.setter
     def translation(self, value: ndarray) -> None:
@@ -946,6 +926,20 @@ class Transform:
         """
         self.matrix[:3, 3] = value
 
+    @shear.setter
+    def shear(self, value: ndarray) -> None:
+        """
+        Overwrite shear while preserving rotation R and scale S.
+        `value` must be a 3x3 with ones on the diagonal.
+        """
+        if np_shape(value) != (3, 3):
+            raise ValueError("shear must be 3x3")
+        if not np_allclose(np_diag(value), 1):
+            raise ValueError("shear diagonal must all be 1")
+        R = self.rotation
+        S, _ = decompose_scale_shear(self.matrix[:3, :3])
+        self.matrix[:3, :3] = R @ S @ value
+
     @scale.setter
     def scale(self, value: ndarray) -> None:
         """
@@ -954,18 +948,10 @@ class Transform:
         Args:
             value: length-3 array to set as scale.
         """
-        shape = np.shape(value)
-        if shape == (1,):
-            s = float(value[0])
-            S = np_diag([s, s, s])
-        elif shape == (3,):
-            S = np_diag(value)
-        elif shape == (3, 3):
-            S = value
-        else:
-            raise ValueError(f"Invalid scale shape: {shape}")
+        if np_shape(value) != (3,):
+            raise ValueError(f"scale must be 3x1.")
 
-        self.matrix[:3, :3] = self.matrix[:3, :3] @ S
+        self.matrix[:3, :3] = self.rotation @ np_diag(value)
 
     @perspective.setter
     def perspective(self, value: ndarray) -> None:
@@ -987,13 +973,9 @@ class Transform:
         Returns:
             self with updated translation.
         """
-        if inplace:
-            self.matrix[:3, 3] = translation
-            return self
-
-        M = self.matrix.copy()
-        M[:3, 3] = translation
-        return self.__class__(M)
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, 3] = translation
+        return self if inplace else self.__class__(mat)
 
     def set_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -1005,13 +987,11 @@ class Transform:
         Returns:
             self with updated rotation.
         """
-        if inplace:
-            self.matrix[:3, :3] = rotation
-            return self
-
-        M = self.matrix.copy()
-        M[:3, :3] = rotation
-        return self.__class__(M)
+        # hence P = Rᵀ (R·P)
+        P = self.rotation.T @ self.matrix[:3, :3]
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = rotation @ P
+        return self if inplace else self.__class__(mat)
 
     def set_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "Transform":
         """
@@ -1023,14 +1003,7 @@ class Transform:
         Returns:
             self with updated rotation.
         """
-        if inplace:
-            self.matrix[:3, :3] = quaternion_to_rotation(
-                quaternion, w_last=w_last)
-            return self
-
-        M = self.matrix.copy()
-        M[:3, :3] = quaternion_to_rotation(quaternion, w_last=w_last)
-        return self.__class__(M)
+        return self.set_rotation(quaternion_to_rotation(quaternion, w_last=w_last), inplace=inplace)
 
     def set_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
         """
@@ -1043,14 +1016,7 @@ class Transform:
         Returns:
             self with updated rotation.
         """
-        if inplace:
-            self.matrix[:3, :3] = euler_to_rotation(
-                roll, pitch, yaw, degrees=degrees)
-            return self
-
-        M = self.matrix.copy()
-        M[:3, :3] = euler_to_rotation(roll, pitch, yaw, degrees=degrees)
-        return self.__class__(M)
+        return self.set_rotation(euler_to_rotation(roll, pitch, yaw, degrees=degrees), inplace=inplace)
 
     def set_scale(self, scale: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -1062,24 +1028,23 @@ class Transform:
         Returns:
             self with updated scale.
         """
-        shape = np.shape(scale)
-        if shape == (1,):
-            s = float(scale[0])
-            S = np_diag([s, s, s])
-        elif shape == (3,):
-            S = np_diag(scale)
-        elif shape == (3, 3):
-            S = scale
-        else:
-            raise ValueError(f"Invalid scale shape: {shape}")
+        if np_shape(scale) != (3,):
+            raise ValueError(f"scale must be 3x1.")
 
-        if inplace:
-            self.matrix[:3, :3] = S
-            return self
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = self.rotation @ np_diag(scale)
+        return self if inplace else self.__class__(mat)
 
-        M = self.matrix.copy()
-        M[:3, :3] = S
-        return self.__class__(M)
+    def set_shear(self, shear: ndarray, *, inplace=False) -> "Transform":
+        """
+        Replace the shear component, keep R and S unchanged.
+        """
+        if np_shape(shear) != (3, 3) or not np_allclose(np_diag(shear), 1):
+            raise ValueError("shear must be 3x3 with unit diagonal")
+        S, _ = decompose_scale_shear(self.matrix[:3, :3])
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = self.rotation @ S @ shear
+        return self if inplace else self.__class__(mat)
 
     def set_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -1091,13 +1056,9 @@ class Transform:
         Returns:
             self with updated perspective.
         """
-        if inplace:
-            self.matrix[3, :] = perspective
-            return self
-
-        M = self.matrix.copy()
-        M[3, :] = perspective
-        return self.__class__(M)
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[3, :] = perspective
+        return self if inplace else self.__class__(mat)
 
     ########
     # Transform methods
@@ -1395,6 +1356,7 @@ class Transform:
     ) -> "Transform":
         """
         Rotate this Transform so that its forward axis points at `target`.
+        Rotate only the R part so forward→target, leaving P intact.
 
         Args:
             target: the target Transform or translation vector.
@@ -1403,29 +1365,26 @@ class Transform:
         Returns:
             Transform with updated rotation.
         """
-        # 1) grab the world-space target translation
+        # 1) compute pure‐rotation that points forward at target
         if isinstance(target, Transform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
+        v = tgt - self.matrix[:3, 3]
+        R_new = rotation_to(v, self.rotation, self.basis_forward())
 
-        # 2) form the vector from this.origin → target
-        target_vector = tgt - self.matrix[:3, 3]
+        # 2) grab old R and P
+        R_old = self.rotation
+        P = R_old.T @ self.matrix[:3, :3]
 
-        # 3) call into our compiled routine
-        R_new = rotation_to(
-            target_vector,
-            self.rotation,
-            self.basis_forward()
-        )
-
-        # 4) build the new 4×4
+        # 3) compose back and write
+        block = R_new @ P
         if inplace:
-            self.matrix[:3, :3] = R_new
+            self.matrix[:3, :3] = block
             return self
 
         M = self.matrix.copy()
-        M[:3, :3] = R_new
+        M[:3, :3] = block
         return self.__class__(M)
 
     ########
@@ -1470,8 +1429,7 @@ class Transform:
 
     def inverse(self, *, inplace: bool = False) -> "Transform":
         """
-        Invert this Transform analytically:
-          T = [R t; 0 1]  ⇒  T⁻¹ = [Rᵀ  -Rᵀ t; 0 1]
+        Invert this Transform.
 
         Args:
             inplace: if True, modify this Transform in place.
@@ -1479,21 +1437,9 @@ class Transform:
         Returns:
             Inverted Transform.
         """
-        R = self.matrix[:3, :3]  # rotation
-        t = self.matrix[:3, 3]  # translation
-
-        R_inv = R.T
-        t_inv = -R_inv @ t
-
-        M = self.matrix.copy()
-        M[:3, :3] = R_inv
-        M[:3,  3] = t_inv
-
-        if inplace:
-            self.matrix[:] = M
-            return self
-
-        return self.__class__(M)
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat = np_inv(mat)
+        return self if inplace else self.__class__(mat)
 
     def transpose(self, *, inplace: bool = False) -> "Transform":
         """
@@ -1742,7 +1688,7 @@ class Transform:
         P = B_old.T @ B_new                # (3×3)
 
         # 3) build a 4×4 homogeneous change‐of‐basis
-        C = np_eye(4, dtype=self.matrix.dtype)
+        C = _EYE4.copy()               # ndarray (4×4)
         C[:3, :3] = P
 
         # 4) apply on the right
@@ -1893,9 +1839,9 @@ def _create_frame_convention(
     x_vec = _DIR_TO_VEC[x]
     y_vec = _DIR_TO_VEC[y]
     z_vec = _DIR_TO_VEC[z]
-    is_right_handed = bool(np.allclose(np.cross(x_vec, y_vec), z_vec))
+    is_right_handed = bool(np_allclose(np_cross(x_vec, y_vec), z_vec))
     # ensure orthobonality
-    if not np.allclose(np.dot(x_vec, y_vec), 0) or not np.allclose(np.dot(x_vec, z_vec), 0) or not np.allclose(np.dot(y_vec, z_vec), 0):
+    if not np_allclose(np_dot(x_vec, y_vec), 0) or not np_allclose(np_dot(x_vec, z_vec), 0) or not np_allclose(np_dot(y_vec, z_vec), 0):
         raise ValueError("x, y, z must be orthogonal Directions")
 
     # define the basis vectors for the class type

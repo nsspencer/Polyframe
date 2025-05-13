@@ -3,7 +3,6 @@
 # Written by: Nathan Spencer
 # Licensed under the Apache License, Version 2.0 (the "License")
 
-from numpy.linalg import qr as np_qr
 from numpy.linalg import det as np_det
 from numpy.linalg import norm as np_norm
 from numpy.linalg import svd as np_svd
@@ -23,7 +22,6 @@ from numpy import ndarray
 import numpy as np
 
 from typing import Union, Optional, List, Tuple, Type, Literal
-from dataclasses import dataclass, field
 from enum import Enum
 from numba import njit
 
@@ -46,29 +44,47 @@ class Direction(Enum):
 
 # map each Direction to its unit‐vector in the *world* frame
 _DIR_TO_VEC = {
-    Direction.FORWARD:  np_array([1,  0,  0]),
-    Direction.BACKWARD: np_array([-1,  0,  0]),
-    Direction.LEFT:    np_array([0,  1,  0]),
-    Direction.RIGHT:     np_array([0, -1,  0]),
-    Direction.UP:       np_array([0,  0,  1]),
-    Direction.DOWN:     np_array([0,  0, -1]),
+    Direction.FORWARD:  np_array([1,  0,  0], dtype=np_float64),
+    Direction.BACKWARD: np_array([-1,  0,  0], dtype=np_float64),
+    Direction.LEFT:    np_array([0,  1,  0], dtype=np_float64),
+    Direction.RIGHT:     np_array([0, -1,  0], dtype=np_float64),
+    Direction.UP:       np_array([0,  0,  1], dtype=np_float64),
+    Direction.DOWN:     np_array([0,  0, -1], dtype=np_float64),
 }
+
+
+@njit(cache=True)
+def is_rigid(mat4: ndarray, tol=1e-6) -> bool:
+    R = mat4[:3, :3]
+    # 1) R must be orthonormal, det≈+1
+    if not (np_allclose(R @ R.T, np_eye(3), atol=tol)
+            and abs(np_det(R) - 1.0) <= tol):
+        return False
+
+    # 2) bottom row must be [0,0,0,1]
+    if not np_allclose(mat4[3, :], [0.0, 0.0, 0.0, 1.0], atol=tol):
+        return False
+
+    # (the translation column can be anything)
+    return True
 
 
 @njit(cache=True)
 def decompose_scale_shear(mat3: ndarray) -> tuple[ndarray, ndarray]:
     """
-    Split the affine block A = R · P into
-        S = (sx,sy,sz)          (pure scale vector)
-        H = S⁻¹ · P             (unit-diagonal shear matrix)
-    Returns scale vector, shear matrix.
+    Split the affine block A into
+
+        S  - pure scale vector (sx, sy, sz)
+        H  - unit-diagonal shear matrix      (A = R · diag(S) · H)
+
+    The implementation is deliberately simple and numerically stable:
+    obtain R from the polar decomposition and peel it off.
     """
-    # polar “stretch” block
-    P = pure_rotation_if_possible(mat3).T @ mat3
-    # S⁻¹·P   (unit diag by construction)
-    scale_vector = np_diag(P)
-    shear_matrix = np.linalg.solve(np_diag(scale_vector), P)
-    return scale_vector, shear_matrix
+    R = pure_rotation_if_possible(mat3)
+    P = R.T @ mat3                     # stretch/shear block   (diag = scale)
+    S_vec = np_diag(P)
+    H_mat = np.linalg.solve(np_diag(S_vec), P)
+    return S_vec, H_mat
 
 
 @njit(cache=True)
@@ -113,9 +129,9 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
     n1 = c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2]
     n2 = c2[0]*c2[0] + c2[1]*c2[1] + c2[2]*c2[2]
 
-    if (abs(n0-1.0) > 1e-6 or
-        abs(n1-1.0) > 1e-6 or
-            abs(n2-1.0) > 1e-6):
+    if (abs(n0-1.0) > 1e-8 or
+        abs(n1-1.0) > 1e-8 or
+            abs(n2-1.0) > 1e-8):
         return polar_rotation_svd(M)          # scale present
 
     # --- 2.  cross‑column orthogonality -----------------------------------
@@ -123,9 +139,9 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
     d02 = c0[0]*c2[0] + c0[1]*c2[1] + c0[2]*c2[2]
     d12 = c1[0]*c2[0] + c1[1]*c2[1] + c1[2]*c2[2]
 
-    if (abs(d01) > 1e-6 or
-        abs(d02) > 1e-6 or
-            abs(d12) > 1e-6):
+    if (abs(d01) > 1e-8 or
+        abs(d02) > 1e-8 or
+            abs(d12) > 1e-8):
         return polar_rotation_svd(M)          # shear / skew
 
     # --- 3.  determinant +1 ? --------------------------------------------
@@ -134,11 +150,16 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
         - M[0, 1]*(M[1, 0]*M[2, 2] - M[1, 2]*M[2, 0])
         + M[0, 2]*(M[1, 0]*M[2, 1] - M[1, 1]*M[2, 0])
     )
-    if abs(detM - 1.0) > 1e-6:
+    if abs(detM - 1.0) > 1e-8:
         return polar_rotation_svd(M)          # reflection or numeric drift
 
     # --- Already a clean rotation ----------------------------------------
     return M
+
+
+@njit(cache=True)
+def pure_rotation_if_possible_and_basis_matmul(M: ndarray, basis_vector: ndarray) -> ndarray:
+    return pure_rotation_if_possible(M) @ basis_vector
 
 
 @njit(cache=True)
@@ -553,7 +574,6 @@ def latitude_longitude_to(
     return lat, lon
 
 
-@dataclass(slots=True)
 class Transform:
     """
     A 4x4 homogeneous transformation in 3D space.
@@ -561,8 +581,15 @@ class Transform:
     Attributes:
         matrix (ndarray): 4x4 transformation matrix.
     """
+    __slots__ = ("matrix",)
 
-    matrix: ndarray = field(default_factory=lambda: _EYE4.copy())
+    def __init__(self, matrix: Optional[ndarray] = None):
+        if matrix is None:
+            self.matrix = _EYE4.copy()
+        else:
+            if matrix.shape != (4, 4):
+                raise ValueError(f"Invalid matrix shape: {matrix.shape}")
+            self.matrix = np_asarray(matrix, dtype=np_float64)
 
     @classmethod
     def identity(cls) -> "Transform":
@@ -572,7 +599,7 @@ class Transform:
         Returns:
             A new Transform whose `matrix` is the identity matrix.
         """
-        return cls()
+        return cls(_EYE4.copy())
 
     @classmethod
     def from_values(
@@ -585,7 +612,7 @@ class Transform:
     ) -> "Transform":
         """
         Create a Transform by assembling translation, rotation, scale, shear, and perspective into a 4x4 matrix.
-
+        Order of application is: scale → shear → rotate → translate → perspective.
         Args:
             translation: length-3 array to place in last column.
             rotation: 3x3 rotation matrix to place in upper-left.
@@ -797,7 +824,7 @@ class Transform:
         """
         R = self.rotation                          # already the polar R
         P = R.T @ self.matrix[:3, :3]              # hence P = Rᵀ (R·P)
-        new_block = rotation @ R @ P                # (Q · R) P
+        new_block = rotation @ R @ P               # (Q · R) P
         mat = self.matrix if inplace else self.matrix.copy()
         mat[:3, :3] = new_block
         return self if inplace else self.__class__(mat)
@@ -867,7 +894,7 @@ class Transform:
 
         M = self.matrix if inplace else self.matrix.copy()
         M[:3, :3] = block
-        return self if inplace else type(self)(M)
+        return self if inplace else self.__class__(M)
 
     def apply_shear(
         self,
@@ -907,7 +934,7 @@ class Transform:
 
         M = self.matrix if inplace else self.matrix.copy()
         M[:3, :3] = block
-        return self if inplace else type(self)(M)
+        return self if inplace else self.__class__(M)
 
     def apply_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -1047,36 +1074,25 @@ class Transform:
         self,
         scale: ndarray,
         *,
-        order: Literal["before", "after"] = "before",
         inplace: bool = False
     ) -> "Transform":
-        """
-        Overwrite the scale (preserving R and H) in the requested order.
-        """
+        """Replace the scale vector while preserving rotation *and* shear."""
         scale = np_asarray(scale, float)
         if scale.shape != (3,):
             raise ValueError(f"scale must be (3,), got {scale.shape}")
 
-        S, H = decompose_scale_shear(self.matrix[:3, :3])
-        scale_mat = np_diag(scale)
-
-        if order == "before":
-            P_new = scale_mat @ np_diag(S) @ H
-        elif order == "after":
-            P_new = np_diag(S) @ H @ scale_mat
-        else:
-            raise ValueError(
-                f"order must be 'before' or 'after', got {order!r}")
+        # keep the current shear only
+        _, H = decompose_scale_shear(self.matrix[:3, :3])
+        P_new = np_diag(scale) @ H      # shear stays intact
 
         M = self.matrix if inplace else self.matrix.copy()
         M[:3, :3] = self.rotation @ P_new
-        return self if inplace else type(self)(M)
+        return self if inplace else self.__class__(M)
 
     def set_shear(
         self,
         shear: ndarray,
         *,
-        order: Literal["before", "after"] = "after",
         inplace: bool = False
     ) -> "Transform":
         """
@@ -1084,21 +1100,15 @@ class Transform:
         """
         shear = np_asarray(shear, float)
         if shear.shape != (3, 3) or not np_allclose(np_diag(shear), 1):
-            raise ValueError("shear must be 3×3 with unit diagonal")
+            raise ValueError("shear must be 3x3 with unit diagonal")
 
-        S, H = decompose_scale_shear(self.matrix[:3, :3])
-
-        if order == "before":
-            P_new = np_diag(S) @ shear @ H
-        elif order == "after":
-            P_new = np_diag(S) @ H @ shear
-        else:
-            raise ValueError(
-                f"order must be 'before' or 'after', got {order!r}")
-
+        # pull out the current scale (ignore any old shear)
+        S, _ = decompose_scale_shear(self.matrix[:3, :3])
+        # always rebuild as: R @ (diag(S) @ new_shear)
+        P_new = np_diag(S) @ shear
         M = self.matrix if inplace else self.matrix.copy()
         M[:3, :3] = self.rotation @ P_new
-        return self if inplace else type(self)(M)
+        return self if inplace else self.__class__(M)
 
     def set_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -1120,29 +1130,20 @@ class Transform:
 
     def transform_point(self, point: ndarray) -> ndarray:
         """
-        Apply this transform to a 3D point (affine).
-
-        Args:
-            point: length-3 array.
-
-        Returns:
-            Transformed length-3 point.
+        Apply the full 4x4 projective transform to a 3D point:
+          X_h ≔ M @ [x, y, z, 1]^T
+          return  (X_h[:3] / X_h[3])
         """
-        p = np_append(point, 1.0)
-        return (self.matrix @ p)[:3]
+        ph = self.matrix @ np_append(point, 1.0)
+        # guard against w≈0
+        w = ph[3]
+        if abs(w) < 1e-12:
+            raise ZeroDivisionError("projective w coordinate is zero")
+        return ph[:3] / w
 
-    def transform_vector(self, vector: ndarray) -> ndarray:
-        """
-        Apply this transform to a 3D direction (no translation).
-
-        Args:
-            vector: length-3 array.
-
-        Returns:
-            Transformed length-3 vector.
-        """
-        v = np_append(vector, 0.0)
-        return (self.matrix @ v)[:3]
+    def transform_vector(self, v: ndarray) -> ndarray:
+        # apply only the top-left 3×3
+        return self.matrix[:3, :3] @ v
 
     ########
     # Target methods
@@ -1447,39 +1448,24 @@ class Transform:
 
     def is_rigid(self, tol: float = 1e-6) -> bool:
         """
-        Check if the transform encodes a pure rotation + translation.
-
-        Parameters:
-        -----------
-        tol : float
-            Tolerance for orthonormality and det≈1 check.
-
-        Returns:
-        --------
-        bool
+        True if this is exactly a rotation+translation (no scale/shear/perspective).
         """
-        rot = self.matrix[:3, :3]
-        return (
-            np_allclose(rot @ rot.T, np_eye(3), atol=tol) and
-            np_allclose(np_det(rot), 1.0, atol=tol) and
-            np_allclose(self.scale, 1, atol=tol)
-        )
+        return is_rigid(self.matrix, tol=tol)
 
     def orthonormalize(self, *, inplace: bool = True) -> "Transform":
         """
-        Re-orthonormalize the rotation block to remove drift.
+        Re-orthonormalize the rotation block to remove drift,
+        using the polar decomposition so the result is always
+        a proper rotation (det=+1) and never flips scale.
 
         Returns:
         --------
         Transform
         """
-        if inplace:
-            self.matrix[:3, :3] = np_qr(self.matrix[:3, :3])[0]
-            return self
-
-        new = self.matrix.copy()
-        new[:3, :3] = np_qr(self.matrix[:3, :3])[0]
-        return self.__class__(new)
+        # polar_rotation_svd returns the closest proper rotation R
+        mat = self.matrix if inplace else self.matrix.copy()
+        mat[:3, :3] = polar_rotation_svd(self.matrix[:3, :3])
+        return self if inplace else self.__class__(mat)
 
     def inverse(self, *, inplace: bool = False) -> "Transform":
         """
@@ -1491,9 +1477,12 @@ class Transform:
         Returns:
             Inverted Transform.
         """
-        mat = self.matrix if inplace else self.matrix.copy()
-        mat = np_inv(mat)
-        return self if inplace else self.__class__(mat)
+        inv_mat = np_inv(self.matrix)
+        if inplace:
+            self.matrix[:] = inv_mat
+            return self
+        else:
+            return self.__class__(inv_mat)
 
     def transpose(self, *, inplace: bool = False) -> "Transform":
         """
@@ -1506,7 +1495,16 @@ class Transform:
             self.matrix[:] = self.matrix.T
             return self
 
-        return self.__class__(self.matrix.copy().T)
+        return self.__class__(self.matrix.T.copy())
+
+    def copy(self) -> "Transform":
+        """
+        Return a copy of this Transform.
+
+        Returns:
+            A new Transform with the same matrix.
+        """
+        return self.__class__(self.matrix.copy())
 
     ###########
     # World frame properties derived from coordinate system convention
@@ -1584,6 +1582,17 @@ class Transform:
 
         Returns:
             True if the coordinate system is right-handed, False otherwise.
+        """
+        ...
+
+    @staticmethod
+    def is_left_handed() -> bool:
+        """
+        Check if the coordinate system is left-handed.
+        Implemented in the generated code.
+
+        Returns:
+            True if the coordinate system is left-handed, False otherwise.
         """
         ...
 
@@ -1821,14 +1830,17 @@ class Transform:
              NotImplemented: If 'other' is neither a numpy ndarray nor a Transform instance.
         """
         if isinstance(other, ndarray):
-            return self.matrix @ other
+            if np_shape(other) == (3,):
+                return self.transform_point(other)
+            else:
+                return self.matrix @ other
 
         if not isinstance(other, Transform):
             return NotImplemented
 
         # if other has a different labeling/basis subclass, convert it
-        if type(other) is not type(self):
-            other = other.change_coordinate_system(type(self))
+        if other.__class__ is not self.__class__:
+            other = other.change_coordinate_system(self.__class__)
 
         # Compose: first apply `other`, then `self`
         M_combined = self.matrix @ other.matrix
@@ -1844,7 +1856,7 @@ class Transform:
         """
         True if `other` is the same class and matrices are equal within a small tolerance.
         """
-        if not isinstance(other, Transform) or type(self) is not type(other):
+        if not isinstance(other, Transform) or self.__class__ is not other.__class__:
             return False
         return np_allclose(self.matrix, other.matrix)
 
@@ -1852,7 +1864,7 @@ class Transform:
         """
         Unambiguous representation including class name and matrix.
         """
-        cls = type(self).__name__
+        cls = self.__class__.__name__
         mat = np_array2string(self.matrix, precision=6, separator=', ')
         return f"{cls}(matrix=\n{mat}\n)"
 
@@ -1866,7 +1878,7 @@ class Transform:
         """
         Shallow copy of this Transform (matrix is copied).
         """
-        return type(self)(self.matrix.copy())
+        return self.__class__(self.matrix.copy())
 
     def __deepcopy__(self, memo) -> "Transform":
         """
@@ -1879,7 +1891,7 @@ class Transform:
         """
         Pickle support: reprunes to (class, (matrix,))
         """
-        return (type(self), (self.matrix.copy(),))
+        return (self.__class__, (self.matrix.copy(),))
 
 
 def _create_frame_convention(
@@ -1894,140 +1906,117 @@ def _create_frame_convention(
     y_vec = _DIR_TO_VEC[y]
     z_vec = _DIR_TO_VEC[z]
     is_right_handed = bool(np_allclose(np_cross(x_vec, y_vec), z_vec))
+
     # ensure orthobonality
     if not np_allclose(np_dot(x_vec, y_vec), 0) or not np_allclose(np_dot(x_vec, z_vec), 0) or not np_allclose(np_dot(y_vec, z_vec), 0):
         raise ValueError("x, y, z must be orthogonal Directions")
 
-    # define the basis vectors for the class type
-    def x_fn(self): return pure_rotation_if_possible(
-        self.matrix[:3, :3])[:3, 0]
-
-    def x_inv_fn(self): return - \
-        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 0]
-
-    def y_fn(self): return pure_rotation_if_possible(
-        self.matrix[:3, :3])[:3, 1]
-
-    def y_inv_fn(self): return - \
-        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 1]
-
-    def z_fn(self): return pure_rotation_if_possible(
-        self.matrix[:3, :3])[:3, 2]
-    def z_inv_fn(self): return - \
-        pure_rotation_if_possible(self.matrix[:3, :3])[:3, 2]
+    # placeholders so every basis_* name exists
+    forward_basis = backward_basis = None
+    left_basis = right_basis = None
+    up_basis = down_basis = None
 
     if x == Direction.FORWARD:
-        forward = x_fn
-        backward = x_inv_fn
         forward_basis = x_vec
+        backward_basis = -x_vec
     elif x == Direction.BACKWARD:
-        backward = x_fn
-        forward = x_inv_fn
         backward_basis = x_vec
+        forward_basis = -x_vec
     elif x == Direction.LEFT:
-        left = x_fn
-        right = x_inv_fn
         left_basis = x_vec
+        right_basis = -x_vec
     elif x == Direction.RIGHT:
-        right = x_fn
-        left = x_inv_fn
         right_basis = x_vec
+        left_basis = -x_vec
     elif x == Direction.UP:
-        up = x_fn
-        down = x_inv_fn
         up_basis = x_vec
+        down_basis = -x_vec
     elif x == Direction.DOWN:
-        down = x_fn
-        up = x_inv_fn
         down_basis = x_vec
+        up_basis = -x_vec
     else:
         raise ValueError("Invalid direction for x")
 
     if y == Direction.FORWARD:
-        forward = y_fn
-        backward = y_inv_fn
         forward_basis = y_vec
+        backward_basis = -y_vec
     elif y == Direction.BACKWARD:
-        backward = y_fn
-        forward = y_inv_fn
         backward_basis = y_vec
+        forward_basis = -y_vec
     elif y == Direction.LEFT:
-        left = y_fn
-        right = y_inv_fn
         left_basis = y_vec
+        right_basis = -y_vec
     elif y == Direction.RIGHT:
-        right = y_fn
-        left = y_inv_fn
         right_basis = y_vec
+        left_basis = -y_vec
     elif y == Direction.UP:
-        up = y_fn
-        down = y_inv_fn
         up_basis = y_vec
+        down_basis = -y_vec
     elif y == Direction.DOWN:
-        down = y_fn
-        up = y_inv_fn
         down_basis = y_vec
+        up_basis = -y_vec
     else:
         raise ValueError("Invalid direction for y")
 
     if z == Direction.FORWARD:
-        forward = z_fn
-        backward = z_inv_fn
         forward_basis = z_vec
+        backward_basis = -z_vec
     elif z == Direction.BACKWARD:
-        backward = z_fn
-        forward = z_inv_fn
         backward_basis = z_vec
+        forward_basis = -z_vec
     elif z == Direction.LEFT:
-        left = z_fn
-        right = z_inv_fn
         left_basis = z_vec
+        right_basis = -z_vec
     elif z == Direction.RIGHT:
-        right = z_fn
-        left = z_inv_fn
         right_basis = z_vec
+        left_basis = -z_vec
     elif z == Direction.UP:
-        up = z_fn
-        down = z_inv_fn
         up_basis = z_vec
+        down_basis = -z_vec
     elif z == Direction.DOWN:
-        down = z_fn
-        up = z_inv_fn
         down_basis = z_vec
+        up_basis = -z_vec
     else:
         raise ValueError("Invalid direction for z")
 
-    # pack onto a new subclass
-    cls_name = f"Transform<{x.name},{y.name},{z.name}>"
-    props = {
-        # world directions
-        "forward": property(forward),
-        "backward": property(backward),
-        "left": property(left),
-        "right": property(right),
-        "up": property(up),
-        "down": property(down),
+    def _make_world_dir(basis_vec: ndarray):
+        # closure captures the static basis_vec for this direction
+        def world_dir(self) -> ndarray:
+            # extract the pure rotation R (drops any scale/shear) and matmul it
+            # with the basis vector
+            return pure_rotation_if_possible_and_basis_matmul(self.matrix[:3, :3], basis_vec)
+        return world_dir
 
-        # basis information
-        "is_right_handed": staticmethod(lambda: is_right_handed),
-        "label_x": staticmethod(lambda: x),
-        "label_y": staticmethod(lambda: y),
-        "label_z": staticmethod(lambda: z),
-        "basis_x": staticmethod(lambda: x_vec),
-        "basis_y": staticmethod(lambda: y_vec),
-        "basis_z": staticmethod(lambda: z_vec),
-        "basis_matrix": staticmethod(lambda: np_array([x_vec, y_vec, z_vec], dtype=np_float64)),
+    props = {
+        # world-directions
+        "forward":  property(_make_world_dir(forward_basis)),
+        "backward": property(_make_world_dir(backward_basis)),
+        "left":     property(_make_world_dir(left_basis)),
+        "right":    property(_make_world_dir(right_basis)),
+        "up":       property(_make_world_dir(up_basis)),
+        "down":     property(_make_world_dir(down_basis)),
+
+        # basis-info statics (unchanged)
+        "is_right_handed":  staticmethod(lambda: is_right_handed),
+        "is_left_handed":  staticmethod(lambda: not is_right_handed),
+        "label_x":          staticmethod(lambda: x),
+        "label_y":          staticmethod(lambda: y),
+        "label_z":          staticmethod(lambda: z),
+        "basis_x":          staticmethod(lambda: x_vec),
+        "basis_y":          staticmethod(lambda: y_vec),
+        "basis_z":          staticmethod(lambda: z_vec),
+        "basis_matrix":     staticmethod(lambda: np_array([x_vec, y_vec, z_vec], dtype=np_float64)),
         "basis_matrix_inv": staticmethod(lambda: np_array([x_vec, y_vec, z_vec], dtype=np_float64).T),
-        "basis_forward": staticmethod(lambda: forward_basis),
-        "basis_backward": staticmethod(lambda: backward_basis),
-        "basis_left": staticmethod(lambda: left_basis),
-        "basis_right": staticmethod(lambda: right_basis),
-        "basis_up": staticmethod(lambda: up_basis),
-        "basis_down": staticmethod(lambda: down_basis),
+        "basis_forward":    staticmethod(lambda: forward_basis),
+        "basis_backward":   staticmethod(lambda: backward_basis),
+        "basis_left":       staticmethod(lambda: left_basis),
+        "basis_right":      staticmethod(lambda: right_basis),
+        "basis_up":         staticmethod(lambda: up_basis),
+        "basis_down":       staticmethod(lambda: down_basis),
     }
-    NewFrame = type(cls_name, (Transform,), props)
-    # make it a slots dataclass
-    return dataclass(NewFrame, slots=True)
+
+    cls_name = f"Transform<{x.name},{y.name},{z.name}>"
+    return type(cls_name, (Transform,), props)
 
 
 # needed for pickling

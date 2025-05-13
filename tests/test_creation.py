@@ -23,7 +23,12 @@ class TestCreation(unittest.TestCase):
         rot = np.eye(3)
         scale = np.array([2, 2, 2])
         persp = np.array([0, 0, 0, 1])
-        t = Transform.from_values(trans, rot, scale, perspective=persp)
+        t = Transform.from_values(
+            translation=trans,
+            rotation=rot,
+            scale=scale,
+            perspective=persp
+        )
         np.testing.assert_array_equal(t.translation, trans)
         np.testing.assert_array_equal(t.rotation, rot)
         np.testing.assert_array_equal(t.scale, scale)
@@ -31,7 +36,6 @@ class TestCreation(unittest.TestCase):
 
     def test_from_values_translation_only(self):
         t = Transform.from_values(translation=[7, 8, 9])
-        # matrix should be identity except for the translation column
         expected = np.eye(4)
         expected[:3, 3] = [7, 8, 9]
         np.testing.assert_array_equal(t.matrix, expected)
@@ -41,7 +45,9 @@ class TestCreation(unittest.TestCase):
         np.testing.assert_array_equal(t.perspective, [0, 0, 0, 1])
 
     def test_from_values_rotation_only(self):
-        R = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])
+        R = np.array([[0, 0, 1],
+                      [0, 1, 0],
+                      [-1, 0, 0]])
         t = Transform.from_values(rotation=R)
         expected = np.eye(4)
         expected[:3, :3] = R
@@ -52,7 +58,6 @@ class TestCreation(unittest.TestCase):
         np.testing.assert_array_equal(t.perspective, [0, 0, 0, 1])
 
     def test_from_values_scale_vector(self):
-        # non-uniform scale via 3-element vector
         s = np.array([2.0, 3.0, 4.0])
         t = Transform.from_values(scale=s)
         expected = np.diag([2.0, 3.0, 4.0, 1.0])
@@ -66,44 +71,59 @@ class TestCreation(unittest.TestCase):
         expected[3, :] = p
         np.testing.assert_array_equal(t.matrix, expected)
         np.testing.assert_array_equal(t.perspective, p)
-        # everything else stays default
         np.testing.assert_array_equal(t.rotation, np.eye(3))
-        np.testing.assert_array_equal(t.translation, [0, 0, 0])
         np.testing.assert_array_equal(t.scale, [1, 1, 1])
+        np.testing.assert_array_equal(t.translation, [0, 0, 0])
 
     def test_from_values_rotation_and_scale(self):
-        R = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+        R = np.array([[0, -1, 0],
+                      [1,  0, 0],
+                      [0,  0, 1]])
         s = np.array([2.0, 2.0, 2.0])
         t = Transform.from_values(rotation=R, scale=s)
-        # scale should post‐multiply rotation
         expected3 = R @ np.diag(s)
         np.testing.assert_array_equal(t.matrix[:3, :3], expected3)
-        # and rotation property (pure) should strip out scale
         np.testing.assert_array_equal(t.rotation, R)
 
     def test_from_values_invalid_scale_shape_raises(self):
         with self.assertRaises(ValueError):
-            # invalid: neither 1-, 3- nor 3×3-shaped
-            Transform.from_values(scale=[1.0, 2.0])
+            Transform.from_values(scale=[1.0, 2.0])  # wrong length
+
+    def test_from_values_shear_only(self):
+        H = np.array([
+            [1.0, 1.5, 0.0],
+            [0.0, 1.0, 2.0],
+            [0.0, 0.0, 1.0]
+        ])
+        t = Transform.from_values(shear=H)
+        # raw 3×3 block must be exactly H
+        np.testing.assert_array_equal(t.matrix[:3, :3], H)
+        # translation/perspective defaults
+        np.testing.assert_array_equal(t.translation, [0, 0, 0])
+        np.testing.assert_array_equal(t.perspective, [0, 0, 0, 1])
+        # rotation & scale *extract* a polar factor and unit‐scale; do not check here
+
+    def test_from_values_invalid_shear_raises(self):
+        # wrong shape or non-unit diagonal
+        with self.assertRaises(ValueError):
+            Transform.from_values(shear=[[1, 0], [0, 1]])
 
     def test_from_quaternion(self):
-        # 90° about Z: quat = [0,0,sin45,cos45]
         q = np.array([0.0, 0.0, np.sin(np.pi/4), np.cos(np.pi/4)])
         t = Transform.from_quaternion(q, w_last=True)
         Rz90 = np.array([[0, -1, 0],
-                         [1, 0, 0],
-                         [0, 0, 1]])
+                         [1,  0, 0],
+                         [0,  0, 1]])
         np.testing.assert_allclose(t.rotation, Rz90, atol=1e-6)
         np.testing.assert_array_equal(t.translation, [0, 0, 0])
         np.testing.assert_array_equal(t.scale, [1, 1, 1])
         np.testing.assert_array_equal(t.perspective, [0, 0, 0, 1])
 
     def test_from_euler_angles(self):
-        # yaw=90 about Z gives same Rz90
-        t = Transform.from_euler_angles(roll=0, pitch=0, yaw=90, degrees=True)
+        t = Transform.from_euler_angles(0, 0, 90, degrees=True)
         Rz90 = np.array([[0, -1, 0],
-                         [1, 0, 0],
-                         [0, 0, 1]])
+                         [1,  0, 0],
+                         [0,  0, 1]])
         np.testing.assert_allclose(t.rotation, Rz90, atol=1e-6)
         np.testing.assert_array_equal(t.translation, [0, 0, 0])
         np.testing.assert_array_equal(t.scale, [1, 1, 1])
@@ -114,7 +134,6 @@ class TestCreation(unittest.TestCase):
         t = Transform.from_flat_array(flat)
         expected = flat.reshape(4, 4)
         np.testing.assert_array_equal(t.matrix, expected)
-        # also round‐trip
         np.testing.assert_array_equal(t.to_flat_array(), flat)
 
     def test_from_list(self):
@@ -122,8 +141,40 @@ class TestCreation(unittest.TestCase):
         t = Transform.from_list(lst)
         expected = np.array(lst, dtype=float).reshape(4, 4)
         np.testing.assert_array_equal(t.matrix, expected)
-        # list conversion
         self.assertEqual(t.to_list(), [float(i) for i in lst])
+
+    def test_from_values_all_components(self):
+        # translation, rotation, scale, shear, perspective together
+        trans = np.array([5.0, -3.0, 2.0])
+        R = np.array([[0, -1,  0],
+                      [1,  0,  0],
+                      [0,  0,  1]])
+        scale = np.array([2.0, 3.0, 4.0])
+        H = np.array([[1.0, 0.5, 0.0],
+                      [0.0, 1.0, 1.5],
+                      [0.0, 0.0, 1.0]])
+        persp = np.array([9.0, 8.0, 7.0, 6.0])
+
+        t = Transform.from_values(
+            translation=trans,
+            rotation=R,
+            scale=scale,
+            shear=H,
+            perspective=persp
+        )
+
+        # raw matrix check
+        expected3 = R @ (np.diag(scale) @ H)
+        expected = np.eye(4)
+        expected[:3, :3] = expected3
+        expected[:3, 3] = trans
+        expected[3, :] = persp
+
+        np.testing.assert_array_equal(t.matrix, expected)
+
+        # still verify translation & perspective
+        np.testing.assert_array_equal(t.translation, trans)
+        np.testing.assert_array_equal(t.perspective, persp)
 
 
 if __name__ == "__main__":

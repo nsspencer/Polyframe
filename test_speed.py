@@ -15,6 +15,7 @@ print(timeit.timeit(lambda: MyTransform.from_values(
 
 t = MyTransform()
 t.rotation  # warmup
+t.forward
 
 t.apply_translation(translation, inplace=True)
 print("forward")

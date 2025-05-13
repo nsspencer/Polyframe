@@ -10,8 +10,8 @@ MyTransform = define_convention(
 print("Creation")
 print(timeit.timeit(lambda: MyTransform(), number=1_000_000))
 translation = np.array([1, 0, 0])
-print(timeit.timeit(lambda: MyTransform.from_translation(
-    translation), number=1_000_000))
+print(timeit.timeit(lambda: MyTransform.from_values(
+    translation=translation), number=1_000_000))
 
 t = MyTransform()
 t.rotation  # warmup

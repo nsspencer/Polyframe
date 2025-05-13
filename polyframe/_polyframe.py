@@ -22,7 +22,7 @@ from numpy import float64 as np_float64
 from numpy import ndarray
 import numpy as np
 
-from typing import Union, Optional, List, Tuple, Type
+from typing import Union, Optional, List, Tuple, Type, Literal
 from dataclasses import dataclass, field
 from enum import Enum
 from numba import njit
@@ -59,17 +59,16 @@ _DIR_TO_VEC = {
 def decompose_scale_shear(mat3: ndarray) -> tuple[ndarray, ndarray]:
     """
     Split the affine block A = R · P into
-        S = (sx,sy,sz)      (pure scale)
-        H = S⁻¹ · P             (unit-diagonal shear)
-    Returns S, H.
+        S = (sx,sy,sz)          (pure scale vector)
+        H = S⁻¹ · P             (unit-diagonal shear matrix)
+    Returns scale vector, shear matrix.
     """
-    R = pure_rotation_if_possible(mat3)
     # polar “stretch” block
-    P = R.T @ mat3
+    P = pure_rotation_if_possible(mat3).T @ mat3
     # S⁻¹·P   (unit diag by construction)
-    S = np_diag(P)
-    H = np.linalg.solve(np_diag(S), P)
-    return S, H
+    scale_vector = np_diag(P)
+    shear_matrix = np.linalg.solve(np_diag(scale_vector), P)
+    return scale_vector, shear_matrix
 
 
 @njit(cache=True)
@@ -97,16 +96,12 @@ def polar_rotation_svd(M: ndarray) -> ndarray:
     return R
 
 
-_TOL_ORTHO = 1e-6
-_TOL_DET = 1e-6
-
-
 @njit(cache=True)
 def pure_rotation_if_possible(M: ndarray) -> ndarray:
     """
     Fast path:  ▸ If M is already a proper rotation (orthonormal, det≈+1)
                 ▸ return it unchanged.
-    Slow path:  ▸ Otherwise perform SVD‑based polar decomposition and
+    Slow path:  ▸ Otherwise perform SVD-based polar decomposition and
                   return the R factor.
     """
     # --- 1.  column norms --------------------------------------------------
@@ -118,9 +113,9 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
     n1 = c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2]
     n2 = c2[0]*c2[0] + c2[1]*c2[1] + c2[2]*c2[2]
 
-    if (abs(n0-1.0) > _TOL_ORTHO or
-        abs(n1-1.0) > _TOL_ORTHO or
-            abs(n2-1.0) > _TOL_ORTHO):
+    if (abs(n0-1.0) > 1e-6 or
+        abs(n1-1.0) > 1e-6 or
+            abs(n2-1.0) > 1e-6):
         return polar_rotation_svd(M)          # scale present
 
     # --- 2.  cross‑column orthogonality -----------------------------------
@@ -128,9 +123,9 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
     d02 = c0[0]*c2[0] + c0[1]*c2[1] + c0[2]*c2[2]
     d12 = c1[0]*c2[0] + c1[1]*c2[1] + c1[2]*c2[2]
 
-    if (abs(d01) > _TOL_ORTHO or
-        abs(d02) > _TOL_ORTHO or
-            abs(d12) > _TOL_ORTHO):
+    if (abs(d01) > 1e-6 or
+        abs(d02) > 1e-6 or
+            abs(d12) > 1e-6):
         return polar_rotation_svd(M)          # shear / skew
 
     # --- 3.  determinant +1 ? --------------------------------------------
@@ -139,7 +134,7 @@ def pure_rotation_if_possible(M: ndarray) -> ndarray:
         - M[0, 1]*(M[1, 0]*M[2, 2] - M[1, 2]*M[2, 0])
         + M[0, 2]*(M[1, 0]*M[2, 1] - M[1, 1]*M[2, 0])
     )
-    if abs(detM - 1.0) > _TOL_DET:
+    if abs(detM - 1.0) > 1e-6:
         return polar_rotation_svd(M)          # reflection or numeric drift
 
     # --- Already a clean rotation ----------------------------------------
@@ -154,6 +149,7 @@ def quaternion_to_rotation(quaternion: ndarray, w_last: bool = True) -> ndarray:
     Args:
         quaternion: shape-(4,) array, either [x,y,z,w] if w_last=True,
                     or [w,x,y,z] if w_last=False.
+        w_last: if True, the quaternion is in [x, y, z, w] format.
 
     Returns:
         R: shape-(3,3) rotation matrix.
@@ -175,7 +171,7 @@ def quaternion_to_rotation(quaternion: ndarray, w_last: bool = True) -> ndarray:
     wy = w*y
     wz = w*z
 
-    R = np.empty((3, 3), dtype=np.float64)
+    R = np.empty((3, 3), dtype=np_float64)
     R[0, 0] = 1 - 2*(yy + zz)
     R[0, 1] = 2*(xy - wz)
     R[0, 2] = 2*(xz + wy)
@@ -197,6 +193,7 @@ def rotation_to_quaternion(rotation: ndarray, w_last: bool = True) -> ndarray:
 
     Args:
         rotation: shape-(3,3) rotation matrix.
+        w_last: if True, return quaternion in [x,y,z,w] format.
 
     Returns:
         quaternion: shape-(4,), in [x,y,z,w] if w_last=True else [w,x,y,z].
@@ -237,7 +234,7 @@ def rotation_to_quaternion(rotation: ndarray, w_last: bool = True) -> ndarray:
             qy = (rotation[1, 2] + rotation[2, 1]) / S
             qz = 0.25 * S
 
-    out = np.empty(4, dtype=np.float64)
+    out = np.empty(4, dtype=np_float64)
     if w_last:
         out[0], out[1], out[2], out[3] = qx, qy, qz, qw
     else:
@@ -306,7 +303,7 @@ def euler_to_rotation(
     sy, cy = np.sin(yaw),   np.cos(yaw)
 
     # R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
-    R = np.empty((3, 3), dtype=np.float64)
+    R = np.empty((3, 3), dtype=np_float64)
     R[0, 0] = cy*cp
     R[0, 1] = cy*sp*sr - sy*cr
     R[0, 2] = cy*sp*cr + sy*sr
@@ -348,7 +345,7 @@ def euler_to_quaternion(
     qy = cr*sp*cy + sr*cp*sy
     qz = cr*cp*sy - sr*sp*cy
 
-    out = np.empty(4, dtype=np.float64)
+    out = np.empty(4, dtype=np_float64)
     if w_last:
         out[0], out[1], out[2], out[3] = qx, qy, qz, qw
     else:
@@ -683,8 +680,10 @@ class Transform:
         Returns:
             A new Transform whose `matrix` is constructed from the flat array.
         """
-        if flat_array.shape != (16,):
-            raise ValueError(f"Invalid flat array shape: {flat_array.shape}")
+        shape = np_shape(flat_array)
+        if shape != (16,):
+            raise ValueError(
+                f"Invalid flat array shape: {shape}")
         flat_array = np_asarray(flat_array, dtype=np_float64)
         mat = flat_array.reshape((4, 4))
         return cls(mat)
@@ -829,60 +828,86 @@ class Transform:
         """
         return self.apply_rotation(euler_to_rotation(roll, pitch, yaw, degrees=degrees), inplace=inplace)
 
-    def apply_scale(self, scale: ndarray, *, inplace: bool = False) -> "Transform":
+    def apply_scale(
+        self,
+        scale: ndarray,
+        *,
+        order: Literal["before", "after"] = "before",
+        inplace: bool = False
+    ) -> "Transform":
         """
-        Apply a scale to this Transform.
+        Apply a scale to this Transform, either before or after the existing shear.
 
         Args:
             scale: length-3 factors to multiply each axis.
+            order:  "before" to scale before existing shear (default),
+                    "after"  to scale after existing shear.
             inplace: if True, modify this Transform in place.
 
         Returns:
-            Transform with updated scale.
+            Transform with updated scale/shear in the requested order.
         """
-        shape = np_shape(scale)
-        if shape == (3,):
-            raise ValueError(f"Invalid scale shape: {shape}")
+        scale = np_asarray(scale, float)
+        if scale.shape != (3,):
+            raise ValueError(f"scale must be (3,), got {scale.shape}")
 
-        R = self.rotation                          # already the polar R
-        P = R.T @ self.matrix[:3, :3]              # hence P = Rᵀ (R·P)
-        P_new = P @ np_diag(scale)                 # keep orientation
-        mat = self.matrix if inplace else self.matrix.copy()
-        mat[:3, :3] = R @ P_new
-        return self if inplace else self.__class__(mat)
+        # pull apart current affine: matrix = R @ (S · H)
+        S, H = decompose_scale_shear(self.matrix[:3, :3])
+        scale_mat = np_diag(scale)
 
-    def apply_shear(self, shear: ndarray, *, inplace=False) -> "Transform":
+        if order == "before":
+            P_new = scale_mat @ np_diag(S) @ H
+        elif order == "after":
+            P_new = np_diag(S) @ H @ scale_mat
+        else:
+            raise ValueError(
+                f"order must be 'before' or 'after', got {order!r}")
+
+        block = self.rotation @ P_new
+
+        M = self.matrix if inplace else self.matrix.copy()
+        M[:3, :3] = block
+        return self if inplace else type(self)(M)
+
+    def apply_shear(
+        self,
+        shear: ndarray,
+        *,
+        order: Literal["before", "after"] = "after",
+        inplace: bool = False
+    ) -> "Transform":
         """
-        Apply a shear transformation to the current affine block in local space.
+        Apply a shear to this Transform, either before or after the existing scale.
 
-        This method post-multiplies the current 3x3 linear (affine) submatrix of the transformation matrix
-        with the provided shear matrix. The shear is applied in the object's local space without altering
-        the scaling of the axes (i.e., each axis retains its current length).
+        Args:
+            shear:   3x3 shear matrix (unit diagonal).
+            order:   "before" to shear before existing scale,
+                     "after"  to shear after existing scale (default).
+            inplace: if True, modify this Transform in place.
 
-        Parameters
-        ----------
-        shear : ndarray
-            A 3x3 shear matrix that must have a unit diagonal (i.e., np.diag(shear) == [1, 1, 1]).
-        inplace : bool, optional
-            If True, modifies the transformation matrix in place. If False, the transformation matrix is copied,
-            and a new instance of the transformation is returned. Default is False.
-
-        Returns
-        -------
-        Transform
-            The updated transformation instance. Returns `self` if inplace is True; otherwise, returns a new instance
-            with the modified matrix.
-
-        Raises
-        ------
-        ValueError
-            If `shear` does not have a shape of (3, 3) or if its diagonal elements are not all ones.
+        Returns:
+            Transform with updated scale/shear in the requested order.
         """
-        if np_shape(shear) != (3, 3) or not np_allclose(np_diag(shear), 1):
+        shear = np_asarray(shear, float)
+        if shear.shape != (3, 3) or not np_allclose(np_diag(shear), 1):
             raise ValueError("shear must be 3x3 with unit diagonal")
-        mat = self.matrix if inplace else self.matrix.copy()
-        mat[:3, :3] = mat[:3, :3] @ shear
-        return self if inplace else self.__class__(mat)
+
+        # pull apart current affine: matrix = R @ (S · H)
+        S, H = decompose_scale_shear(self.matrix[:3, :3])
+
+        if order == "before":
+            P_new = np_diag(S) @ shear @ H
+        elif order == "after":
+            P_new = np_diag(S) @ H @ shear
+        else:
+            raise ValueError(
+                f"order must be 'before' or 'after', got {order!r}")
+
+        block = self.rotation @ P_new
+
+        M = self.matrix if inplace else self.matrix.copy()
+        M[:3, :3] = block
+        return self if inplace else type(self)(M)
 
     def apply_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """
@@ -936,9 +961,8 @@ class Transform:
             raise ValueError("shear must be 3x3")
         if not np_allclose(np_diag(value), 1):
             raise ValueError("shear diagonal must all be 1")
-        R = self.rotation
         S, _ = decompose_scale_shear(self.matrix[:3, :3])
-        self.matrix[:3, :3] = R @ S @ value
+        self.matrix[:3, :3] = self.rotation @ np_diag(S) @ value
 
     @scale.setter
     def scale(self, value: ndarray) -> None:
@@ -951,7 +975,8 @@ class Transform:
         if np_shape(value) != (3,):
             raise ValueError(f"scale must be 3x1.")
 
-        self.matrix[:3, :3] = self.rotation @ np_diag(value)
+        _, H = decompose_scale_shear(self.matrix[:3, :3])
+        self.matrix[:3, :3] = self.rotation @ np_diag(value) @ H
 
     @perspective.setter
     def perspective(self, value: ndarray) -> None:
@@ -1018,33 +1043,62 @@ class Transform:
         """
         return self.set_rotation(euler_to_rotation(roll, pitch, yaw, degrees=degrees), inplace=inplace)
 
-    def set_scale(self, scale: ndarray, *, inplace: bool = False) -> "Transform":
+    def set_scale(
+        self,
+        scale: ndarray,
+        *,
+        order: Literal["before", "after"] = "before",
+        inplace: bool = False
+    ) -> "Transform":
         """
-        Assign a scale to this Transform.
-
-        Args:
-            scale: length-3 factors to set as scale.
-
-        Returns:
-            self with updated scale.
+        Overwrite the scale (preserving R and H) in the requested order.
         """
-        if np_shape(scale) != (3,):
-            raise ValueError(f"scale must be 3x1.")
+        scale = np_asarray(scale, float)
+        if scale.shape != (3,):
+            raise ValueError(f"scale must be (3,), got {scale.shape}")
 
-        mat = self.matrix if inplace else self.matrix.copy()
-        mat[:3, :3] = self.rotation @ np_diag(scale)
-        return self if inplace else self.__class__(mat)
+        S, H = decompose_scale_shear(self.matrix[:3, :3])
+        scale_mat = np_diag(scale)
 
-    def set_shear(self, shear: ndarray, *, inplace=False) -> "Transform":
+        if order == "before":
+            P_new = scale_mat @ np_diag(S) @ H
+        elif order == "after":
+            P_new = np_diag(S) @ H @ scale_mat
+        else:
+            raise ValueError(
+                f"order must be 'before' or 'after', got {order!r}")
+
+        M = self.matrix if inplace else self.matrix.copy()
+        M[:3, :3] = self.rotation @ P_new
+        return self if inplace else type(self)(M)
+
+    def set_shear(
+        self,
+        shear: ndarray,
+        *,
+        order: Literal["before", "after"] = "after",
+        inplace: bool = False
+    ) -> "Transform":
         """
-        Replace the shear component, keep R and S unchanged.
+        Overwrite the shear (preserving R and S) in the requested order.
         """
-        if np_shape(shear) != (3, 3) or not np_allclose(np_diag(shear), 1):
-            raise ValueError("shear must be 3x3 with unit diagonal")
-        S, _ = decompose_scale_shear(self.matrix[:3, :3])
-        mat = self.matrix if inplace else self.matrix.copy()
-        mat[:3, :3] = self.rotation @ S @ shear
-        return self if inplace else self.__class__(mat)
+        shear = np_asarray(shear, float)
+        if shear.shape != (3, 3) or not np_allclose(np_diag(shear), 1):
+            raise ValueError("shear must be 3×3 with unit diagonal")
+
+        S, H = decompose_scale_shear(self.matrix[:3, :3])
+
+        if order == "before":
+            P_new = np_diag(S) @ shear @ H
+        elif order == "after":
+            P_new = np_diag(S) @ H @ shear
+        else:
+            raise ValueError(
+                f"order must be 'before' or 'after', got {order!r}")
+
+        M = self.matrix if inplace else self.matrix.copy()
+        M[:3, :3] = self.rotation @ P_new
+        return self if inplace else type(self)(M)
 
     def set_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
         """

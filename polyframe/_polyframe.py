@@ -22,559 +22,15 @@ from numpy import ndarray
 import numpy as np
 
 from typing import Union, Optional, List, Tuple, Type, Literal
-from enum import Enum
-from numba import njit
-
-from numba.core.errors import NumbaPerformanceWarning
-import warnings
-warnings.filterwarnings("ignore", category=NumbaPerformanceWarning)
+from polyframe.utils import *
+from polyframe.geometry import *
+from polyframe.direction import Direction, _DIR_TO_VEC
 
 # preallocate the identity matrix for performance
 _EYE4 = np_eye(4, dtype=np_float64)
 
 
-class Direction(Enum):
-    FORWARD = 0
-    BACKWARD = 1
-    LEFT = 2
-    RIGHT = 3
-    UP = 4
-    DOWN = 5
-
-
-# map each Direction to its unit‐vector in the *world* frame
-_DIR_TO_VEC = {
-    Direction.FORWARD:  np_array([1,  0,  0], dtype=np_float64),
-    Direction.BACKWARD: np_array([-1,  0,  0], dtype=np_float64),
-    Direction.LEFT:    np_array([0,  1,  0], dtype=np_float64),
-    Direction.RIGHT:     np_array([0, -1,  0], dtype=np_float64),
-    Direction.UP:       np_array([0,  0,  1], dtype=np_float64),
-    Direction.DOWN:     np_array([0,  0, -1], dtype=np_float64),
-}
-
-
-@njit(cache=True)
-def is_rigid(mat4: ndarray, tol=1e-6) -> bool:
-    R = mat4[:3, :3]
-    # 1) R must be orthonormal, det≈+1
-    if not (np_allclose(R @ R.T, np_eye(3), atol=tol)
-            and abs(np_det(R) - 1.0) <= tol):
-        return False
-
-    # 2) bottom row must be [0,0,0,1]
-    if not np_allclose(mat4[3, :], [0.0, 0.0, 0.0, 1.0], atol=tol):
-        return False
-
-    # (the translation column can be anything)
-    return True
-
-
-@njit(cache=True)
-def decompose_scale_shear(mat3: ndarray) -> tuple[ndarray, ndarray]:
-    """
-    Split the affine block A into
-
-        S  - pure scale vector (sx, sy, sz)
-        H  - unit-diagonal shear matrix      (A = R · diag(S) · H)
-
-    The implementation is deliberately simple and numerically stable:
-    obtain R from the polar decomposition and peel it off.
-    """
-    R = pure_rotation_if_possible(mat3)
-    P = R.T @ mat3                     # stretch/shear block   (diag = scale)
-    S_vec = np_diag(P)
-    H_mat = np.linalg.solve(np_diag(S_vec), P)
-    return S_vec, H_mat
-
-
-@njit(cache=True)
-def polar_rotation_svd(M: ndarray) -> ndarray:
-    """
-    Return the orthonormal rotation R from the polar decomposition M = R · P
-    using a single SVD call (U Σ Vᵀ).  Handles all edge cases:
-
-    * arbitrary scale, shear, or reflection in M
-    * singular / nearly singular M   → best-fit R is still defined
-    * det(R) enforced to +1 (proper rotation)
-    """
-    # 1) SVD – works for any real 3×3, even rank‑deficient
-    U, _, Vt = np_svd(M)          # M = U Σ Vᵀ
-
-    # 2) Draft rotation
-    R = U @ Vt                           # U Vᵀ is orthogonal; det may be −1
-
-    # 3) Force det(R)=+1  (avoid improper reflection)
-    if np_det(R) < 0.0:
-        # Flip sign of last column of U (equivalent to Σ33 → −Σ33)
-        U[:, 2] *= -1.0
-        R = U @ Vt                       # recompute with proper handedness
-
-    return R
-
-
-@njit(cache=True)
-def pure_rotation_if_possible(M: ndarray) -> ndarray:
-    """
-    Fast path:  ▸ If M is already a proper rotation (orthonormal, det≈+1)
-                ▸ return it unchanged.
-    Slow path:  ▸ Otherwise perform SVD-based polar decomposition and
-                  return the R factor.
-    """
-    # --- 1.  column norms --------------------------------------------------
-    c0 = M[:, 0]
-    c1 = M[:, 1]
-    c2 = M[:, 2]
-
-    n0 = c0[0]*c0[0] + c0[1]*c0[1] + c0[2]*c0[2]
-    n1 = c1[0]*c1[0] + c1[1]*c1[1] + c1[2]*c1[2]
-    n2 = c2[0]*c2[0] + c2[1]*c2[1] + c2[2]*c2[2]
-
-    if (abs(n0-1.0) > 1e-8 or
-        abs(n1-1.0) > 1e-8 or
-            abs(n2-1.0) > 1e-8):
-        return polar_rotation_svd(M)          # scale present
-
-    # --- 2.  cross‑column orthogonality -----------------------------------
-    d01 = c0[0]*c1[0] + c0[1]*c1[1] + c0[2]*c1[2]
-    d02 = c0[0]*c2[0] + c0[1]*c2[1] + c0[2]*c2[2]
-    d12 = c1[0]*c2[0] + c1[1]*c2[1] + c1[2]*c2[2]
-
-    if (abs(d01) > 1e-8 or
-        abs(d02) > 1e-8 or
-            abs(d12) > 1e-8):
-        return polar_rotation_svd(M)          # shear / skew
-
-    # --- 3.  determinant +1 ? --------------------------------------------
-    detM = (
-        M[0, 0]*(M[1, 1]*M[2, 2] - M[1, 2]*M[2, 1])
-        - M[0, 1]*(M[1, 0]*M[2, 2] - M[1, 2]*M[2, 0])
-        + M[0, 2]*(M[1, 0]*M[2, 1] - M[1, 1]*M[2, 0])
-    )
-    if abs(detM - 1.0) > 1e-8:
-        return polar_rotation_svd(M)          # reflection or numeric drift
-
-    # --- Already a clean rotation ----------------------------------------
-    return M
-
-
-@njit(cache=True)
-def pure_rotation_if_possible_and_basis_matmul(M: ndarray, basis_vector: ndarray) -> ndarray:
-    return pure_rotation_if_possible(M) @ basis_vector
-
-
-@njit(cache=True)
-def quaternion_to_rotation(quaternion: ndarray, w_last: bool = True) -> ndarray:
-    """
-    Convert a quaternion to a 3x3 rotation matrix.
-
-    Args:
-        quaternion: shape-(4,) array, either [x,y,z,w] if w_last=True,
-                    or [w,x,y,z] if w_last=False.
-        w_last: if True, the quaternion is in [x, y, z, w] format.
-
-    Returns:
-        R: shape-(3,3) rotation matrix.
-    """
-    # unpack
-    if w_last:
-        x, y, z, w = quaternion[0], quaternion[1], quaternion[2], quaternion[3]
-    else:
-        w, x, y, z = quaternion[0], quaternion[1], quaternion[2], quaternion[3]
-
-    # precompute products
-    xx = x*x
-    yy = y*y
-    zz = z*z
-    xy = x*y
-    xz = x*z
-    yz = y*z
-    wx = w*x
-    wy = w*y
-    wz = w*z
-
-    R = np.empty((3, 3), dtype=np_float64)
-    R[0, 0] = 1 - 2*(yy + zz)
-    R[0, 1] = 2*(xy - wz)
-    R[0, 2] = 2*(xz + wy)
-
-    R[1, 0] = 2*(xy + wz)
-    R[1, 1] = 1 - 2*(xx + zz)
-    R[1, 2] = 2*(yz - wx)
-
-    R[2, 0] = 2*(xz - wy)
-    R[2, 1] = 2*(yz + wx)
-    R[2, 2] = 1 - 2*(xx + yy)
-    return R
-
-
-@njit(cache=True)
-def rotation_to_quaternion(rotation: ndarray, w_last: bool = True) -> ndarray:
-    """
-    Convert a 3x3 rotation matrix to a quaternion.
-
-    Args:
-        rotation: shape-(3,3) rotation matrix.
-        w_last: if True, return quaternion in [x,y,z,w] format.
-
-    Returns:
-        quaternion: shape-(4,), in [x,y,z,w] if w_last=True else [w,x,y,z].
-    """
-    tr = rotation[0, 0] + rotation[1, 1] + rotation[2, 2]
-    qx = 0.0
-    qy = 0.0
-    qz = 0.0
-    qw = 0.0
-
-    if tr > 0.0:
-        S = np.sqrt(tr + 1.0) * 2.0
-        qw = 0.25 * S
-        qx = (rotation[2, 1] - rotation[1, 2]) / S
-        qy = (rotation[0, 2] - rotation[2, 0]) / S
-        qz = (rotation[1, 0] - rotation[0, 1]) / S
-    else:
-        # find which major diagonal element has greatest value
-        if rotation[0, 0] > rotation[1, 1] and rotation[0, 0] > rotation[2, 2]:
-            S = np.sqrt(1.0 + rotation[0, 0] -
-                        rotation[1, 1] - rotation[2, 2]) * 2.0
-            qw = (rotation[2, 1] - rotation[1, 2]) / S
-            qx = 0.25 * S
-            qy = (rotation[0, 1] + rotation[1, 0]) / S
-            qz = (rotation[0, 2] + rotation[2, 0]) / S
-        elif rotation[1, 1] > rotation[2, 2]:
-            S = np.sqrt(1.0 + rotation[1, 1] -
-                        rotation[0, 0] - rotation[2, 2]) * 2.0
-            qw = (rotation[0, 2] - rotation[2, 0]) / S
-            qx = (rotation[0, 1] + rotation[1, 0]) / S
-            qy = 0.25 * S
-            qz = (rotation[1, 2] + rotation[2, 1]) / S
-        else:
-            S = np.sqrt(1.0 + rotation[2, 2] -
-                        rotation[0, 0] - rotation[1, 1]) * 2.0
-            qw = (rotation[1, 0] - rotation[0, 1]) / S
-            qx = (rotation[0, 2] + rotation[2, 0]) / S
-            qy = (rotation[1, 2] + rotation[2, 1]) / S
-            qz = 0.25 * S
-
-    out = np.empty(4, dtype=np_float64)
-    if w_last:
-        out[0], out[1], out[2], out[3] = qx, qy, qz, qw
-    else:
-        out[0], out[1], out[2], out[3] = qw, qx, qy, qz
-    return out
-
-
-@njit(cache=True)
-def rotation_to_euler(rotation: ndarray, degrees: bool = True) -> tuple[float, float, float]:
-    """
-    Convert a 3x3 rotation matrix to (roll-pitch-yaw) Euler angles.
-
-    Returns angles [roll, pitch, yaw].
-    """
-    # pitch = asin(-R[2,0])
-    sp = -rotation[2, 0]
-    if sp > 1.0:
-        sp = 1.0
-    elif sp < -1.0:
-        sp = -1.0
-    pitch = np.arcsin(sp)
-
-    # roll  = atan2( R[2,1],  R[2,2] )
-    # yaw   = atan2( R[1,0],  R[0,0] )
-    cp = np.cos(pitch)
-    roll = np.arctan2(rotation[2, 1]/cp, rotation[2, 2]/cp)
-    yaw = np.arctan2(rotation[1, 0]/cp, rotation[0, 0]/cp)
-
-    if degrees:
-        roll = np.degrees(roll)
-        pitch = np.degrees(pitch)
-        yaw = np.degrees(yaw)
-
-    return roll, pitch, yaw
-
-
-@njit(cache=True)
-def quaternion_to_euler(
-    quaternion: ndarray,
-    w_last: bool = True,
-    degrees: bool = True
-) -> Tuple[float, float, float]:
-    """
-    Convert a quaternion to Euler angles [roll, pitch, yaw].
-    """
-    R = quaternion_to_rotation(quaternion, w_last)
-    return rotation_to_euler(R, degrees)
-
-
-@njit(cache=True)
-def euler_to_rotation(
-        roll: float,
-        pitch: float,
-        yaw: float,
-        degrees: bool = True) -> ndarray:
-    """
-    Convert Euler angles [roll, pitch, yaw] to a 3x3 rotation matrix.
-    """
-    if degrees:
-        roll *= np.pi/180.0
-        pitch *= np.pi/180.0
-        yaw *= np.pi/180.0
-
-    sr, cr = np.sin(roll),  np.cos(roll)
-    sp, cp = np.sin(pitch), np.cos(pitch)
-    sy, cy = np.sin(yaw),   np.cos(yaw)
-
-    # R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
-    R = np.empty((3, 3), dtype=np_float64)
-    R[0, 0] = cy*cp
-    R[0, 1] = cy*sp*sr - sy*cr
-    R[0, 2] = cy*sp*cr + sy*sr
-
-    R[1, 0] = sy*cp
-    R[1, 1] = sy*sp*sr + cy*cr
-    R[1, 2] = sy*sp*cr - cy*sr
-
-    R[2, 0] = -sp
-    R[2, 1] = cp*sr
-    R[2, 2] = cp*cr
-    return R
-
-
-@njit(cache=True)
-def euler_to_quaternion(
-    roll: float,
-    pitch: float,
-    yaw: float,
-    degrees: bool = True,
-    w_last: bool = True
-) -> ndarray:
-    """
-    Convert Euler angles [roll, pitch, yaw] to a quaternion.
-    """
-    if degrees:
-        roll *= np.pi/180.0
-        pitch *= np.pi/180.0
-        yaw *= np.pi/180.0
-
-    hr, hp, hy = roll*0.5, pitch*0.5, yaw*0.5
-    sr, cr = np.sin(hr), np.cos(hr)
-    sp, cp = np.sin(hp), np.cos(hp)
-    sy, cy = np.sin(hy), np.cos(hy)
-
-    # quaternion for R = Rz * Ry * Rx  is q = qz * qy * qx
-    qw = cr*cp*cy + sr*sp*sy
-    qx = sr*cp*cy - cr*sp*sy
-    qy = cr*sp*cy + sr*cp*sy
-    qz = cr*cp*sy - sr*sp*cy
-
-    out = np.empty(4, dtype=np_float64)
-    if w_last:
-        out[0], out[1], out[2], out[3] = qx, qy, qz, qw
-    else:
-        out[0], out[1], out[2], out[3] = qw, qx, qy, qz
-    return out
-
-
-@njit(cache=True)
-def rotation_to(
-    target_vector: ndarray,
-    current_R: ndarray,
-    forward: ndarray
-) -> ndarray:
-    """
-    Compute a new 3x3 rotation matrix that takes the “forward” axis
-    of the current rotation and re-aims it at the direction of `target_vector`.
-    """
-    # length of target_vector
-    d = np_norm(target_vector)
-    # if almost zero, no change
-    if d < 1e-8:
-        return current_R.copy()
-
-    # normalize desired direction
-    v_des = target_vector / d
-    # current forward in world coords
-    v_curr = np_dot(current_R, forward)
-
-    # rotation axis = v_curr × v_des
-    axis = np_cross(v_curr, v_des)
-    s = np_norm(axis)
-    c = np_dot(v_curr, v_des)
-
-    # degenerate: either aligned (c≈1) or opposite (c≈-1)
-    if s < 1e-8:
-        if c > 0.0:
-            # already pointing the right way
-            R_delta = np_eye(3)
-        else:
-            # flip 180° about any perpendicular axis
-            # pick axis orthogonal to v_curr
-            perp = np_cross(v_curr, np_array([1.0, 0.0, 0.0]))
-            if np_norm(perp) < 1e-3:
-                perp = np_cross(v_curr, np_array([0.0, 1.0, 0.0]))
-            perp /= np_norm(perp)
-            # Rodrigues 180°: R = I + 2 * (K @ K)
-            K = np_array([[0, -perp[2],  perp[1]],
-                          [perp[2],      0, -perp[0]],
-                          [-perp[1],  perp[0],     0]])
-            R_delta = np_eye(3) + 2.0 * (K @ K)
-    else:
-        # general case:
-        axis = axis / s
-        K = np_array([[0, -axis[2],  axis[1]],
-                      [axis[2],      0, -axis[0]],
-                      [-axis[1],  axis[0],      0]])
-        R_delta = np_eye(3) + K * s + (K @ K) * (1.0 - c)
-
-    # final new world rotation = R_delta @ current_R
-    return np_dot(R_delta, current_R)
-
-
-@njit(cache=True)
-def azimuth_elevation_to(target_vector: ndarray, up: ndarray, lateral: ndarray, forward: ndarray, degrees: bool = True, signed_azimuth: bool = False, counterclockwise_azimuth: bool = False, flip_elevation: bool = False) -> tuple[float, float]:
-    """
-    Calculate azimuth and elevation from origin to target
-    in the origin's own coordinate frame.
-
-    Args:
-        target_vector: the vector from origin to target.
-        up: the up vector of the origin.
-        lateral: the lateral vector of the origin.
-        forward: the forward vector of the origin.
-        degrees: if True, return az/el in degrees, else radians.
-        signed_azimuth: if True, az ∈ [-180,180] (or [-π,π]), else [0,360).
-        counterclockwise_azimuth: if True, positive az is from forward → left,
-                        otherwise forward → right.
-        flip_elevation: if True, positive el means downward (down vector),
-                        otherwise positive means upward (up vector).
-
-    Returns:
-        (azimuth, elevation)
-    """
-    rng = np_norm(target_vector)
-    if rng < 1e-12:
-        return (0.0, 0.0)
-
-    # 3) horizontal projection: subtract off the component along 'up'
-    #    (always use up for defining the horizontal plane)
-    target_vector_h = target_vector - np_dot(target_vector, up) * up
-    h_norm = np_norm(target_vector_h)
-    if h_norm < 1e-8:
-        # looking straight up/down: azimuth undefined → zero
-        az_rad = 0.0
-    else:
-        # choose which lateral axis to project onto for azimuth
-        if not counterclockwise_azimuth:
-            lateral = -lateral
-        comp = np_dot(target_vector_h, lateral)
-        az_rad = np.arctan2(comp, np_dot(target_vector_h, forward))
-
-    # 4) optionally wrap into [0,2π)
-    if not signed_azimuth:
-        az_rad = az_rad % (2*np.pi)
-
-    # 5) elevation: angle between target_vector and horizontal plane
-    #    choose up vs down as positive direction
-    e_ref = -up if flip_elevation else up
-    el_rad = np.arctan2(np_dot(target_vector, e_ref), h_norm)
-
-    # 6) degrees?
-    if degrees:
-        az_rad = np.degrees(az_rad)
-        el_rad = np.degrees(el_rad)
-
-    return az_rad, el_rad
-
-
-@njit(cache=True)
-def phi_theta_to(
-    target_vector: ndarray,
-    up: ndarray,
-    lateral: ndarray,
-    forward: ndarray,
-    degrees: bool,
-    signed_phi: bool,
-    counterclockwise_phi: bool,
-    polar: bool,
-    flip_theta: bool
-) -> tuple[float, float]:
-    # normalize
-    r = np_norm(target_vector)
-    if r < 1e-12:
-        return 0.0, 0.0
-    unit = target_vector / r
-
-    # φ: positive around up-axis; CCW=forward→left, else forward→right
-    axis = -lateral if counterclockwise_phi else lateral
-    phi = np.arctan2(
-        np_dot(unit, axis),
-        np_dot(unit, forward)
-    )
-    if signed_phi:
-        # wrap into (–π, π]
-        phi = (phi + np.pi) % (2*np.pi) - np.pi
-    else:
-        # wrap into [0, 2π)
-        phi = phi % (2*np.pi)
-
-    # θ
-    if polar:
-        # polar angle from up-axis:
-        theta = np.arccos(np_dot(unit, up))
-    else:
-        # elevation from horizontal:
-        # elevation = atan2(dot(unit, up), norm of horizontal component)
-        horiz = target_vector - np_dot(target_vector, up) * up
-        hnorm = np_norm(horiz)
-        theta = np.arctan2(np_dot(unit, up), hnorm)
-
-    if flip_theta:
-        theta = -theta
-
-    if degrees:
-        phi = np.degrees(phi)
-        theta = np.degrees(theta)
-    return phi, theta
-
-
-@njit(cache=True)
-def latitude_longitude_to(
-    target_vector: ndarray,
-    up: ndarray,
-    lateral: ndarray,
-    forward: ndarray,
-    degrees: bool,
-    signed_longitude: bool,
-    counterclockwise_longitude: bool,
-    flip_latitude: bool
-) -> tuple[float, float]:
-    # normalize
-    r = np_norm(target_vector)
-    if r < 1e-12:
-        return 0.0, 0.0
-    unit = target_vector / r
-
-    # longitude
-    if not counterclockwise_longitude:
-        lateral = -lateral
-    lon = np.arctan2(
-        np_dot(unit, lateral),
-        np_dot(unit, forward)
-    )
-    if not signed_longitude:
-        lon = lon % (2*np.pi)
-
-    # latitude = arcsin(z/r) = angle above/below equatorial plane
-    lat = np.arcsin(np_dot(unit, up))
-    if flip_latitude:
-        lat = -lat
-
-    if degrees:
-        lat = np.degrees(lat)
-        lon = np.degrees(lon)
-    return lat, lon
-
-
-class Transform:
+class WorldTransform:
     """
     A 4x4 homogeneous transformation in 3D space.
 
@@ -592,12 +48,12 @@ class Transform:
             self.matrix = np_asarray(matrix, dtype=np_float64)
 
     @classmethod
-    def identity(cls) -> "Transform":
+    def identity(cls) -> "WorldTransform":
         """
-        Create an identity Transform.
+        Create an identity WorldTransform.
 
         Returns:
-            A new Transform whose `matrix` is the identity matrix.
+            A new WorldTransform whose `matrix` is the identity matrix.
         """
         return cls(_EYE4.copy())
 
@@ -609,9 +65,9 @@ class Transform:
         scale: Optional[Union[ndarray, List, Tuple]] = None,
         shear: Optional[Union[ndarray, List, Tuple]] = None,
         perspective: Optional[Union[ndarray, List, Tuple]] = None,
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Create a Transform by assembling translation, rotation, scale, shear, and perspective into a 4x4 matrix.
+        Create a WorldTransform by assembling translation, rotation, scale, shear, and perspective into a 4x4 matrix.
         Order of application is: scale → shear → rotate → translate → perspective.
         Args:
             translation: length-3 array to place in last column.
@@ -621,7 +77,7 @@ class Transform:
             perspective: length-4 perspective array.
 
         Returns:
-            A new Transform whose `matrix` encodes the provided information.
+            A new WorldTransform whose `matrix` encodes the provided information.
         """
         instance = cls()
         if translation is not None:
@@ -645,9 +101,9 @@ class Transform:
         scale: Optional[Union[ndarray, List, Tuple]] = None,
         shear: Optional[Union[ndarray, List, Tuple]] = None,
         perspective: Optional[Union[ndarray, List, Tuple]] = None,
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Create a Transform from a quaternion.
+        Create a WorldTransform from a quaternion.
 
         Args:
             quaternion: 4-element array representing the quaternion.
@@ -658,7 +114,7 @@ class Transform:
             perspective: length-4 perspective array.
 
         Returns:
-            A new Transform whose `matrix` encodes R.
+            A new WorldTransform whose `matrix` encodes R.
         """
         return cls.from_values(translation=translation, rotation=quaternion_to_rotation(quaternion, w_last=w_last), scale=scale, shear=shear, perspective=perspective)
 
@@ -673,9 +129,9 @@ class Transform:
         scale: Optional[Union[ndarray, List, Tuple]] = None,
         shear: Optional[Union[ndarray, List, Tuple]] = None,
         perspective: Optional[Union[ndarray, List, Tuple]] = None,
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Create a Transform from Euler angles.
+        Create a WorldTransform from Euler angles.
 
         Args:
             roll: rotation around x-axis.
@@ -688,7 +144,7 @@ class Transform:
             perspective: length-4 perspective array.
 
         Returns:
-            A new Transform whose `matrix` encodes R.
+            A new WorldTransform whose `matrix` encodes R.
         """
         return cls.from_values(translation=translation, rotation=euler_to_rotation(
             roll, pitch, yaw, degrees=degrees), scale=scale, shear=shear, perspective=perspective)
@@ -697,15 +153,15 @@ class Transform:
     def from_flat_array(
         cls,
         flat_array: ndarray,
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Create a Transform from a flat array.
+        Create a WorldTransform from a flat array.
 
         Args:
             flat_array: 1D array of 16 floats representing the matrix.
 
         Returns:
-            A new Transform whose `matrix` is constructed from the flat array.
+            A new WorldTransform whose `matrix` is constructed from the flat array.
         """
         shape = np_shape(flat_array)
         if shape != (16,):
@@ -719,15 +175,15 @@ class Transform:
     def from_list(
         cls,
         list_array: List[float],
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Create a Transform from a list.
+        Create a WorldTransform from a list.
 
         Args:
             list_array: 1D list of 16 floats representing the matrix.
 
         Returns:
-            A new Transform whose `matrix` is constructed from the list.
+            A new WorldTransform whose `matrix` is constructed from the list.
         """
         if len(list_array) != 16:
             raise ValueError(f"Invalid list array length: {len(list_array)}")
@@ -796,31 +252,31 @@ class Transform:
     # Apply methods
     #
 
-    def apply_translation(self, translation: ndarray, *, inplace: bool = False) -> "Transform":
+    def apply_translation(self, translation: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Apply a translation to this Transform.
+        Apply a translation to this WorldTransform.
 
         Args:
             translation: length-3 vector to add to current translation.
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated translation.
+            WorldTransform with updated translation.
         """
         mat = self.matrix if inplace else self.matrix.copy()
         mat[:3, 3] += translation
         return self if inplace else self.__class__(mat)
 
-    def apply_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "Transform":
+    def apply_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Apply a rotation to this Transform.
+        Apply a rotation to this WorldTransform.
 
         Args:
             rotation: 3x3 matrix to left-multiply current rotation.
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated rotation.
+            WorldTransform with updated rotation.
         """
         R = self.rotation                          # already the polar R
         P = R.T @ self.matrix[:3, :3]              # hence P = Rᵀ (R·P)
@@ -829,29 +285,29 @@ class Transform:
         mat[:3, :3] = new_block
         return self if inplace else self.__class__(mat)
 
-    def apply_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "Transform":
+    def apply_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "WorldTransform":
         """
-        Apply a quaternion to this Transform.
+        Apply a quaternion to this WorldTransform.
 
         Args:
             quaternion: 4-element array representing the quaternion.
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated rotation.
+            WorldTransform with updated rotation.
         """
         return self.apply_rotation(quaternion_to_rotation(quaternion, w_last=w_last), inplace=inplace)
 
-    def apply_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
+    def apply_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "WorldTransform":
         """
-        Apply Euler angles to this Transform.
+        Apply Euler angles to this WorldTransform.
 
         Args:
             euler_angles: 3-element array representing the Euler angles (roll, pitch, yaw).
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated rotation.
+            WorldTransform with updated rotation.
         """
         return self.apply_rotation(euler_to_rotation(roll, pitch, yaw, degrees=degrees), inplace=inplace)
 
@@ -861,18 +317,18 @@ class Transform:
         *,
         order: Literal["before", "after"] = "before",
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Apply a scale to this Transform, either before or after the existing shear.
+        Apply a scale to this WorldTransform, either before or after the existing shear.
 
         Args:
             scale: length-3 factors to multiply each axis.
             order:  "before" to scale before existing shear (default),
                     "after"  to scale after existing shear.
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated scale/shear in the requested order.
+            WorldTransform with updated scale/shear in the requested order.
         """
         scale = np_asarray(scale, float)
         if scale.shape != (3,):
@@ -902,18 +358,18 @@ class Transform:
         *,
         order: Literal["before", "after"] = "after",
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Apply a shear to this Transform, either before or after the existing scale.
+        Apply a shear to this WorldTransform, either before or after the existing scale.
 
         Args:
             shear:   3x3 shear matrix (unit diagonal).
             order:   "before" to shear before existing scale,
                      "after"  to shear after existing scale (default).
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated scale/shear in the requested order.
+            WorldTransform with updated scale/shear in the requested order.
         """
         shear = np_asarray(shear, float)
         if shear.shape != (3, 3) or not np_allclose(np_diag(shear), 1):
@@ -936,16 +392,16 @@ class Transform:
         M[:3, :3] = block
         return self if inplace else self.__class__(M)
 
-    def apply_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
+    def apply_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Apply a perspective to this Transform.
+        Apply a perspective to this WorldTransform.
 
         Args:
             perspective: length-4 array to add to current perspective.
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated perspective.
+            WorldTransform with updated perspective.
         """
         mat = self.matrix if inplace else self.matrix.copy()
         mat[3, :] += perspective
@@ -1015,9 +471,9 @@ class Transform:
         """
         self.matrix[3, :] = value
 
-    def set_translation(self, translation: ndarray, *, inplace: bool = False) -> "Transform":
+    def set_translation(self, translation: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Assign a translation to this Transform.
+        Assign a translation to this WorldTransform.
 
         Args:
             translation: length-3 vector to set as translation.
@@ -1029,9 +485,9 @@ class Transform:
         mat[:3, 3] = translation
         return self if inplace else self.__class__(mat)
 
-    def set_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "Transform":
+    def set_rotation(self, rotation: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Assign a rotation to this Transform.
+        Assign a rotation to this WorldTransform.
 
         Args:
             rotation: 3x3 matrix to set as rotation.
@@ -1045,9 +501,9 @@ class Transform:
         mat[:3, :3] = rotation @ P
         return self if inplace else self.__class__(mat)
 
-    def set_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "Transform":
+    def set_rotation_from_quaternion(self, quaternion: ndarray, w_last: bool = True, *, inplace: bool = False) -> "WorldTransform":
         """
-        Assign a quaternion to this Transform.
+        Assign a quaternion to this WorldTransform.
 
         Args:
             quaternion: 4-element array representing the quaternion.
@@ -1057,13 +513,13 @@ class Transform:
         """
         return self.set_rotation(quaternion_to_rotation(quaternion, w_last=w_last), inplace=inplace)
 
-    def set_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "Transform":
+    def set_rotation_from_euler(self, roll: float, pitch: float, yaw: float, degrees: bool = True, *, inplace: bool = False) -> "WorldTransform":
         """
-        Assign Euler angles to this Transform.
+        Assign Euler angles to this WorldTransform.
 
         Args:
             euler_angles: 3-element array representing the Euler angles (roll, pitch, yaw).
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
             self with updated rotation.
@@ -1075,7 +531,7 @@ class Transform:
         scale: ndarray,
         *,
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """Replace the scale vector while preserving rotation *and* shear."""
         scale = np_asarray(scale, float)
         if scale.shape != (3,):
@@ -1094,7 +550,7 @@ class Transform:
         shear: ndarray,
         *,
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
         Overwrite the shear (preserving R and S) in the requested order.
         """
@@ -1110,9 +566,9 @@ class Transform:
         M[:3, :3] = self.rotation @ P_new
         return self if inplace else self.__class__(M)
 
-    def set_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "Transform":
+    def set_perspective(self, perspective: ndarray, *, inplace: bool = False) -> "WorldTransform":
         """
-        Assign a perspective to this Transform.
+        Assign a perspective to this WorldTransform.
 
         Args:
             perspective: length-4 array to set as perspective.
@@ -1125,7 +581,7 @@ class Transform:
         return self if inplace else self.__class__(mat)
 
     ########
-    # Transform methods
+    # WorldTransform methods
     #
 
     def transform_point(self, point: ndarray) -> ndarray:
@@ -1149,51 +605,51 @@ class Transform:
     # Target methods
     #
 
-    def distance_to(self, target: Union["Transform", ndarray]) -> float:
+    def distance_to(self, target: Union["WorldTransform", ndarray]) -> float:
         """
-        Compute the distance to another Transform or translation vector.
+        Compute the distance to another WorldTransform or translation vector.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
 
         Returns:
             The distance to the target.
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
 
         return np_norm(tgt - self.matrix[:3, 3])
 
-    def vector_to(self, target: Union["Transform", ndarray]) -> ndarray:
+    def vector_to(self, target: Union["WorldTransform", ndarray]) -> ndarray:
         """
-        Compute the vector to another Transform or translation vector.
+        Compute the vector to another WorldTransform or translation vector.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
 
         Returns:
             The vector to the target.
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
 
         return tgt - self.matrix[:3, 3]
 
-    def direction_to(self, target: Union["Transform", ndarray]) -> ndarray:
+    def direction_to(self, target: Union["WorldTransform", ndarray]) -> ndarray:
         """
-        Compute the direction to another Transform or translation vector.
+        Compute the direction to another WorldTransform or translation vector.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
 
         Returns:
             The direction to the target.
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
@@ -1207,19 +663,19 @@ class Transform:
 
     def rotation_to(
         self,
-        target: Union["Transform", ndarray],
+        target: Union["WorldTransform", ndarray],
     ) -> ndarray:
         """
         Get the rotation from this Trasnform to the target.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
 
         Returns:
             Rotation matrix 3x3.
         """
         # 1) grab the world-space target translation
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
@@ -1234,18 +690,18 @@ class Transform:
             self.basis_forward()
         )
 
-    def quaternion_to(self, target: Union["Transform", ndarray], w_last: bool = True) -> ndarray:
+    def quaternion_to(self, target: Union["WorldTransform", ndarray], w_last: bool = True) -> ndarray:
         """
-        Get the quaternion from this Transform to the target.
+        Get the quaternion from this WorldTransform to the target.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
 
         Returns:
             Quaternion 4-element array.
         """
         # 1) grab the world-space target translation
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
@@ -1263,19 +719,19 @@ class Transform:
             w_last=w_last
         )
 
-    def euler_angles_to(self, target: Union["Transform", ndarray], degrees: bool = True) -> tuple[float, float, float]:
+    def euler_angles_to(self, target: Union["WorldTransform", ndarray], degrees: bool = True) -> tuple[float, float, float]:
         """
-        Get the Euler angles from this Transform to the target.
+        Get the Euler angles from this WorldTransform to the target.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
             degrees: if True, return angles in degrees, else radians.
 
         Returns:
             (roll, pitch, yaw)
         """
         # 1) grab the world-space target translation
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
@@ -1295,7 +751,7 @@ class Transform:
 
     def azimuth_elevation_to(
         self,
-        target: Union["Transform", ndarray],
+        target: Union["WorldTransform", ndarray],
         *,
         degrees: bool = True,
         signed_azimuth: bool = False,
@@ -1306,8 +762,8 @@ class Transform:
         Calculate azimuth, elevation, and range to the target.
 
         Args:
-            origin: the observer Transform.
-            target: the target Transform or translation vector.
+            origin: the observer WorldTransform.
+            target: the target WorldTransform or translation vector.
             degrees: if True, return az/el in degrees, else radians.
             signed_azimuth: if True, az ∈ [-180,180] (or [-π,π]), else [0,360).
             counterclockwise_azimuth: if True, positive az is from forward → left,
@@ -1318,7 +774,7 @@ class Transform:
         Returns:
             (azimuth, elevation)
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             target_vector = target.matrix[:3, 3] - self.matrix[:3, 3]
         else:
             target_vector = np_asarray(target, float) - self.matrix[:3, 3]
@@ -1326,7 +782,7 @@ class Transform:
 
     def phi_theta_to(
         self,
-        target: Union["Transform", ndarray],
+        target: Union["WorldTransform", ndarray],
         *,
         degrees: bool = True,
         signed_phi: bool = False,
@@ -1338,7 +794,7 @@ class Transform:
         Calculate (φ, θ) to the target.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
             degrees: if True, return angles in degrees, else radians.
             signed_phi: if True, φ in [-π,π] (or [-180,180]), else [0,2π) (or [0,360)).
             counterclockwise_phi: if True, φ positive from forward → left, else forward → right.
@@ -1348,7 +804,7 @@ class Transform:
         Returns:
             (φ, θ)
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tv = target.matrix[:3, 3] - self.matrix[:3, 3]
         else:
             tv = np_asarray(target, float) - self.matrix[:3, 3]
@@ -1365,7 +821,7 @@ class Transform:
 
     def latitude_longitude_to(
         self,
-        target: Union["Transform", ndarray],
+        target: Union["WorldTransform", ndarray],
         *,
         degrees: bool = True,
         signed_longitude: bool = True,
@@ -1376,7 +832,7 @@ class Transform:
         Calculate (latitude, longitude) to the target.
 
         Args:
-            target: the target Transform or translation vector.
+            target: the target WorldTransform or translation vector.
             degrees: if True, return lat/lon in degrees, else radians.
             signed_longitude: if True, lon in [-π,π] (or [-180,180]), else [0,2π).
             counterclockwise_longitude: if True, lon positive from forward → left, else forward → right.
@@ -1385,7 +841,7 @@ class Transform:
         Returns:
             (latitude, longitude)
         """
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tv = target.matrix[:3, 3] - self.matrix[:3, 3]
         else:
             tv = np_asarray(target, float) - self.matrix[:3, 3]
@@ -1405,23 +861,23 @@ class Transform:
 
     def look_at(
         self,
-        target: Union["Transform", ndarray],
+        target: Union["WorldTransform", ndarray],
         *,
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
-        Rotate this Transform so that its forward axis points at `target`.
+        Rotate this WorldTransform so that its forward axis points at `target`.
         Rotate only the R part so forward→target, leaving P intact.
 
         Args:
-            target: the target Transform or translation vector.
-            inplace: if True, modify this Transform in place.
+            target: the target WorldTransform or translation vector.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Transform with updated rotation.
+            WorldTransform with updated rotation.
         """
         # 1) compute pure‐rotation that points forward at target
-        if isinstance(target, Transform):
+        if isinstance(target, WorldTransform):
             tgt = target.matrix[:3, 3]
         else:
             tgt = np_asarray(target, float)
@@ -1452,7 +908,7 @@ class Transform:
         """
         return is_rigid(self.matrix, tol=tol)
 
-    def orthonormalize(self, *, inplace: bool = True) -> "Transform":
+    def orthonormalize(self, *, inplace: bool = True) -> "WorldTransform":
         """
         Re-orthonormalize the rotation block to remove drift,
         using the polar decomposition so the result is always
@@ -1460,22 +916,22 @@ class Transform:
 
         Returns:
         --------
-        Transform
+        WorldTransform
         """
         # polar_rotation_svd returns the closest proper rotation R
         mat = self.matrix if inplace else self.matrix.copy()
         mat[:3, :3] = polar_rotation_svd(self.matrix[:3, :3])
         return self if inplace else self.__class__(mat)
 
-    def inverse(self, *, inplace: bool = False) -> "Transform":
+    def inverse(self, *, inplace: bool = False) -> "WorldTransform":
         """
-        Invert this Transform.
+        Invert this WorldTransform.
 
         Args:
-            inplace: if True, modify this Transform in place.
+            inplace: if True, modify this WorldTransform in place.
 
         Returns:
-            Inverted Transform.
+            Inverted WorldTransform.
         """
         inv_mat = np_inv(self.matrix)
         if inplace:
@@ -1484,7 +940,7 @@ class Transform:
         else:
             return self.__class__(inv_mat)
 
-    def transpose(self, *, inplace: bool = False) -> "Transform":
+    def transpose(self, *, inplace: bool = False) -> "WorldTransform":
         """
         Transpose of the 4x4 matrix.
 
@@ -1497,12 +953,12 @@ class Transform:
 
         return self.__class__(self.matrix.T.copy())
 
-    def copy(self) -> "Transform":
+    def copy(self) -> "WorldTransform":
         """
-        Return a copy of this Transform.
+        Return a copy of this WorldTransform.
 
         Returns:
-            A new Transform with the same matrix.
+            A new WorldTransform with the same matrix.
         """
         return self.__class__(self.matrix.copy())
 
@@ -1714,10 +1170,10 @@ class Transform:
 
     def change_coordinate_system(
         self,
-        other: Type["Transform"],
+        other: Type["WorldTransform"],
         *,
         inplace: bool = False
-    ) -> "Transform":
+    ) -> "WorldTransform":
         """
         Re-express this transform in the coordinate system defined by `other` by right multiplying.
 
@@ -1736,11 +1192,11 @@ class Transform:
             M_new = self.matrix @ C
 
         Args:
-            other:     The Transform *class* whose basis you want to switch into.
+            other:     The WorldTransform *class* whose basis you want to switch into.
             inplace:   If True, overwrite self.matrix; otherwise return a new instance.
 
         Returns:
-            A Transform of type `other` whose numeric matrix does the same
+            A WorldTransform of type `other` whose numeric matrix does the same
             world-space mapping, but expects `other`-local inputs.
         """
         # 1) grab the 3×3 basis matrices (rows = basis vectors in world coords)
@@ -1808,26 +1264,26 @@ class Transform:
     # Dunder methods
     #
 
-    def __matmul__(self, other: Union["Transform", ndarray]) -> Union["Transform", ndarray]:
+    def __matmul__(self, other: Union["WorldTransform", ndarray]) -> Union["WorldTransform", ndarray]:
         """
         Compute the matrix multiplication or composition of transforms.
         This magic method overloads the @ operator. It supports two types of operands:
         1. If 'other' is a numpy ndarray, this method applies the transform's 4x4 matrix
             to the array and returns the resulting array.
-        2. If 'other' is another Transform, it composes the transforms in such a way that
+        2. If 'other' is another WorldTransform, it composes the transforms in such a way that
             the transformation represented by 'other' is applied first, followed by this transform.
             If the two transforms have different coordinate system representations,
             'other' is converted to the same basis as self before composition.
         Parameters:
-             other (Union["Transform", ndarray]): The right-hand operand. It can be either:
+             other (Union["WorldTransform", ndarray]): The right-hand operand. It can be either:
                   - A numpy ndarray, in which case the transform's matrix is applied to it.
-                  - Another Transform object, in which case the transforms are composed (self ∘ other).
+                  - Another WorldTransform object, in which case the transforms are composed (self ∘ other).
         Returns:
-             Union["Transform", ndarray]:
+             Union["WorldTransform", ndarray]:
                   - A numpy ndarray if 'other' is an ndarray.
-                  - A new Transform instance representing the composition if 'other' is a Transform.
+                  - A new WorldTransform instance representing the composition if 'other' is a WorldTransform.
         Raises:
-             NotImplemented: If 'other' is neither a numpy ndarray nor a Transform instance.
+             NotImplemented: If 'other' is neither a numpy ndarray nor a WorldTransform instance.
         """
         if isinstance(other, ndarray):
             if np_shape(other) == (3,):
@@ -1835,7 +1291,7 @@ class Transform:
             else:
                 return self.matrix @ other
 
-        if not isinstance(other, Transform):
+        if not isinstance(other, WorldTransform):
             return NotImplemented
 
         # if other has a different labeling/basis subclass, convert it
@@ -1846,7 +1302,7 @@ class Transform:
         M_combined = self.matrix @ other.matrix
         return self.__class__(M_combined)
 
-    def __mul__(self, other: Union["Transform", ndarray]) -> Union["Transform", ndarray]:
+    def __mul__(self, other: Union["WorldTransform", ndarray]) -> Union["WorldTransform", ndarray]:
         """
         Alias for the @ operator: allows `self * other` as well as `self @ other`.
         """
@@ -1856,7 +1312,7 @@ class Transform:
         """
         True if `other` is the same class and matrices are equal within a small tolerance.
         """
-        if not isinstance(other, Transform) or self.__class__ is not other.__class__:
+        if not isinstance(other, WorldTransform) or self.__class__ is not other.__class__:
             return False
         return np_allclose(self.matrix, other.matrix)
 
@@ -1874,13 +1330,13 @@ class Transform:
         """
         return self.__repr__()
 
-    def __copy__(self) -> "Transform":
+    def __copy__(self) -> "WorldTransform":
         """
-        Shallow copy of this Transform (matrix is copied).
+        Shallow copy of this WorldTransform (matrix is copied).
         """
         return self.__class__(self.matrix.copy())
 
-    def __deepcopy__(self, memo) -> "Transform":
+    def __deepcopy__(self, memo) -> "WorldTransform":
         """
         Deep copy support for the copy module.
         """
@@ -1896,7 +1352,7 @@ class Transform:
 
 def _create_frame_convention(
     x: Direction, y: Direction, z: Direction
-) -> Type[Transform]:
+) -> Type[WorldTransform]:
     # sanity check
     if len({x, y, z}) != 3:
         raise ValueError("x, y, z must be three distinct Directions")
@@ -2015,8 +1471,8 @@ def _create_frame_convention(
         "basis_down":       staticmethod(lambda: down_basis),
     }
 
-    cls_name = f"Transform<{x.name},{y.name},{z.name}>"
-    return type(cls_name, (Transform,), props)
+    cls_name = f"WorldTransform<{x.name},{y.name},{z.name}>"
+    return type(cls_name, (WorldTransform,), props)
 
 
 # needed for pickling
@@ -2032,7 +1488,7 @@ for x in Direction:
                 pass
 
 
-def define_convention(x: Direction = Direction.FORWARD, y: Direction = Direction.LEFT, z: Direction = Direction.UP) -> Type[Transform]:
+def define_convention(x: Direction = Direction.FORWARD, y: Direction = Direction.LEFT, z: Direction = Direction.UP) -> Type[WorldTransform]:
     """
     Get the transform type for the given frame convention.
 
@@ -2047,7 +1503,7 @@ def define_convention(x: Direction = Direction.FORWARD, y: Direction = Direction
 
     Returns
     -------
-    Type[Transform]
+    Type[WorldTransform]
         The transform type for the given frame convention.
     """
     val = _FRAME_REGISTRY.get((x, y, z), None)

@@ -1435,22 +1435,34 @@ def _create_frame_convention(
     else:
         raise ValueError("Invalid direction for z")
 
-    def _make_world_dir(basis_vec: ndarray):
-        # closure captures the static basis_vec for this direction
-        def world_dir(self) -> ndarray:
-            # extract the pure rotation R (drops any scale/shear) and matmul it
-            # with the basis vector
-            return pure_rotation_if_possible_and_basis_matmul(self.matrix[:3, :3], basis_vec)
-        return world_dir
+    def _make_world_dir(reverse: bool, column_number: int):
+        if reverse:
+            def direction(self) -> np.ndarray:
+                return -pure_rotation_if_possible(self.matrix[:3, :3])[:, column_number]
+            return direction
+        else:
+            def direction(self) -> np.ndarray:
+                return pure_rotation_if_possible(self.matrix[:3, :3])[:, column_number]
+            return direction
+
+    basis_matrix = np.array([x_vec, y_vec, z_vec], dtype=np.float64)
+    basis_matrix_inv = basis_matrix.T
+
+    forward_idx = int(np.argmax(forward_basis != 0))
+    backward_idx = int(np.argmax(backward_basis != 0))
+    left_idx = int(np.argmax(left_basis != 0))
+    right_idx = int(np.argmax(right_basis != 0))
+    up_idx = int(np.argmax(up_basis != 0))
+    down_idx = int(np.argmax(down_basis != 0))
 
     props = {
         # world-directions
-        "forward":  property(_make_world_dir(forward_basis)),
-        "backward": property(_make_world_dir(backward_basis)),
-        "left":     property(_make_world_dir(left_basis)),
-        "right":    property(_make_world_dir(right_basis)),
-        "up":       property(_make_world_dir(up_basis)),
-        "down":     property(_make_world_dir(down_basis)),
+        "forward":  property(_make_world_dir(forward_basis[forward_idx] < 0, forward_idx)),
+        "backward": property(_make_world_dir(backward_basis[backward_idx] < 0, backward_idx)),
+        "left":     property(_make_world_dir(left_basis[left_idx] < 0, left_idx)),
+        "right":    property(_make_world_dir(right_basis[right_idx] < 0, right_idx)),
+        "up":       property(_make_world_dir(up_basis[up_idx] < 0, up_idx)),
+        "down":     property(_make_world_dir(down_basis[down_idx] < 0, down_idx)),
 
         # basis-info statics (unchanged)
         "is_right_handed":  staticmethod(lambda: is_right_handed),
@@ -1461,8 +1473,8 @@ def _create_frame_convention(
         "basis_x":          staticmethod(lambda: x_vec),
         "basis_y":          staticmethod(lambda: y_vec),
         "basis_z":          staticmethod(lambda: z_vec),
-        "basis_matrix":     staticmethod(lambda: np_array([x_vec, y_vec, z_vec], dtype=np_float64)),
-        "basis_matrix_inv": staticmethod(lambda: np_array([x_vec, y_vec, z_vec], dtype=np_float64).T),
+        "basis_matrix":     staticmethod(lambda: basis_matrix),
+        "basis_matrix_inv": staticmethod(lambda: basis_matrix_inv),
         "basis_forward":    staticmethod(lambda: forward_basis),
         "basis_backward":   staticmethod(lambda: backward_basis),
         "basis_left":       staticmethod(lambda: left_basis),

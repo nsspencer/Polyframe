@@ -17,14 +17,30 @@ if __name__ == "__main__":
         Direction.FORWARD, Direction.RIGHT, Direction.UP)
     t.rotation_as_quaternion()
     t.rotation_as_euler()
-    t.to_matrix()
+    t.bake()
     t.look_at(p)
 
     print("init", timeit.timeit(lambda: LocalTransform(), number=1_000_000))
     print("from uncheched", timeit.timeit(lambda: LocalTransform.from_unchecked_values(
         translation, rotation, scale), number=1_000_000))
 
-    print("to matrix", timeit.timeit(lambda: t.to_matrix(), number=1_000_000))
+    translation2 = [1, 2, 3]
+
+    def assign_translation():
+        t.translation += translation
+
+    def assign_translation2():
+        t.translation += translation2
+
+    print("bake", timeit.timeit(lambda: t.bake(), number=1_000_000))
+    print("assign from array", timeit.timeit(
+        assign_translation, number=1_000_000))
+    print("assign from list", timeit.timeit(
+        assign_translation2, number=1_000_000))
+    print("get translation", timeit.timeit(
+        lambda: t.translation, number=1_000_000))
+    print("get _translation", timeit.timeit(
+        lambda: t._translation, number=1_000_000))
     print("forward", timeit.timeit(lambda: t.forward, number=1_000_000))
     print("backward", timeit.timeit(lambda: t.backward, number=1_000_000))
     print("left", timeit.timeit(lambda: t.left, number=1_000_000))

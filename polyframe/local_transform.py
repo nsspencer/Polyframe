@@ -2,9 +2,7 @@ import numpy as np
 from numpy.linalg import norm as np_norm
 from numpy import asarray as np_asarray
 from polyframe.geometry import (
-    quaternion_to_rotation,
     rotation_to_quaternion,
-    euler_to_rotation,
     rotation_to_euler,
     rotation_to,
     latitude_longitude_to,
@@ -13,81 +11,102 @@ from polyframe.geometry import (
 )
 from polyframe.utils import to_matrix
 from typing import Tuple, Type, Union, Iterable
-from enum import Enum
+from polyframe.direction import Direction, _DIR_TO_VEC
 
 _BASE_TRANSLATION = np.zeros(3)
 _BASE_ROTATION = np.eye(3)
 _BASE_SCALE = np.ones(3)
 
 
-class Direction(Enum):
-    FORWARD = 0
-    BACKWARD = 1
-    LEFT = 2
-    RIGHT = 3
-    UP = 4
-    DOWN = 5
-
-
-# map each Direction to its unit‐vector in the *world* frame
-_DIR_TO_VEC = {
-    Direction.FORWARD:  np.array([1,  0,  0], dtype=np.float64),
-    Direction.BACKWARD: np.array([-1,  0,  0], dtype=np.float64),
-    Direction.LEFT:    np.array([0,  1,  0], dtype=np.float64),
-    Direction.RIGHT:     np.array([0, -1,  0], dtype=np.float64),
-    Direction.UP:       np.array([0,  0,  1], dtype=np.float64),
-    Direction.DOWN:     np.array([0,  0, -1], dtype=np.float64),
-}
-
-
 class LocalTransform:
-    __slots__ = ('translation', 'rotation', 'scale')
+    __slots__ = ('_translation', '_rotation', '_scale', '_dirty', '_matrix')
 
     def __init__(self, translation: Union[None, Iterable] = None, rotation: Union[None, Iterable] = None, scale: Union[None, Iterable] = None):
+        self._dirty = True
+        self._matrix = None
         if translation is not None:
-            self.translation = np_asarray(translation)
-            if self.translation.shape != (3,):
+            self._translation = np_asarray(translation)
+            if self._translation.shape != (3,):
                 raise ValueError(
-                    f"Translation must be a 3D vector, got {self.translation.shape}")
+                    f"Translation must be a 3D vector, got {self._translation.shape}")
         else:
-            self.translation = _BASE_TRANSLATION.copy()
+            self._translation = _BASE_TRANSLATION.copy()
 
         if rotation is not None:
-            self.rotation = np_asarray(rotation)
-            if self.rotation.shape != (3, 3):
+            self._rotation = np_asarray(rotation)
+            if self._rotation.shape != (3, 3):
                 raise ValueError(
-                    f"Rotation must be a 3x3 matrix, got {self.rotation.shape}")
+                    f"Rotation must be a 3x3 matrix, got {self._rotation.shape}")
         else:
-            self.rotation = _BASE_ROTATION.copy()
+            self._rotation = _BASE_ROTATION.copy()
 
         if scale is not None:
-            self.scale = np_asarray(scale)
-            if self.scale.shape != (3,):
+            self._scale = np_asarray(scale)
+            if self._scale.shape != (3,):
                 raise ValueError(
-                    f"Scale must be a 3D vector, got {self.scale.shape}")
+                    f"Scale must be a 3D vector, got {self._scale.shape}")
         else:
-            self.scale = _BASE_SCALE.copy()
+            self._scale = _BASE_SCALE.copy()
 
     @classmethod
     def from_unchecked_values(cls, translation: np.ndarray, rotation: np.ndarray, scale: np.ndarray):
-        """Create a LocalTransform without checking the validity of the inputs. Useful for performance when you are sure of the input shapes."""
+        """Create a LocalTransform without checking the validity of the inputs. Useful for performance when you are sure of the input shapes and types."""
         instance = object.__new__(cls)
-        instance.translation = translation
-        instance.rotation = rotation
-        instance.scale = scale
+        instance._dirty = True
+        instance._matrix = None
+        instance._translation = translation
+        instance._rotation = rotation
+        instance._scale = scale
         return instance
 
-    def to_matrix(self) -> np.ndarray:
+    @property
+    def translation(self) -> np.ndarray:
+        """Get the translation vector."""
+        return self._translation
+
+    @translation.setter
+    def translation(self, value: Union[Iterable, np.ndarray]):
+        """Set the translation vector."""
+        self._translation = np_asarray(value)
+        self._dirty = True
+
+    @property
+    def rotation(self) -> np.ndarray:
+        """Get the rotation matrix."""
+        return self._rotation
+
+    @rotation.setter
+    def rotation(self, value: Union[Iterable, np.ndarray]):
+        """Set the rotation matrix."""
+        self._rotation = np_asarray(value)
+        self._dirty = True
+
+    @property
+    def scale(self) -> np.ndarray:
+        """Get the scale vector."""
+        return self._scale
+
+    @scale.setter
+    def scale(self, value: Union[Iterable, np.ndarray]):
+        """Set the scale vector."""
+        self._scale = np_asarray(value)
+        self._dirty = True
+
+    def bake(self) -> np.ndarray:
         """Convert the transform to a 4x4 transformation matrix."""
-        return to_matrix(self.translation, self.rotation, self.scale)
+        if self._dirty:
+            self._matrix = to_matrix(
+                self._translation, self._rotation, self._scale)
+            self._dirty = False
+        return self._matrix
 
     def rotation_as_quaternion(self, w_last: bool = True) -> np.ndarray:
         """Convert the transform to a quaternion."""
-        return rotation_to_quaternion(self.rotation, w_last=w_last)
+        return rotation_to_quaternion(self._rotation, w_last=w_last)
 
     def rotation_as_euler(self, degrees: bool = True) -> Tuple[float, float, float]:
         """Convert the transform to Euler angles (roll, pitch, yaw)."""
-        return rotation_to_euler(self.rotation, degrees=degrees)
+        return rotation_to_euler(self._rotation, degrees=degrees)
 
     def copy(self) -> "LocalTransform":
         """
@@ -96,7 +115,7 @@ class LocalTransform:
         Returns:
             A new LocalTransform with the same matrix.
         """
-        return self.__class__.from_unchecked_values(self.translation.copy(), self.rotation.copy(), self.scale.copy())
+        return self.__class__.from_unchecked_values(self._translation.copy(), self._rotation.copy(), self._scale.copy())
 
     def distance_to(self, target: Union["LocalTransform", np.ndarray]) -> np.floating:
         """
@@ -109,11 +128,11 @@ class LocalTransform:
             The distance to the target.
         """
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
 
-        return np_norm(tgt - self.translation)
+        return np_norm(tgt - self._translation)
 
     def vector_to(self, target: Union["LocalTransform", np.ndarray]) -> np.ndarray:
         """
@@ -126,11 +145,11 @@ class LocalTransform:
             The vector to the target.
         """
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
 
-        return tgt - self.translation
+        return tgt - self._translation
 
     def direction_to(self, target: Union["LocalTransform", np.ndarray]) -> np.ndarray:
         """
@@ -143,10 +162,10 @@ class LocalTransform:
             The direction to the target.
         """
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
-        target_vector = tgt - self.translation
+        target_vector = tgt - self._translation
         distance = np_norm(target_vector)
         if distance < 1e-8:
             # avoid division by zero by returning forward vector
@@ -169,17 +188,17 @@ class LocalTransform:
         """
         # 1) grab the world-space target translation
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
 
         # 2) form the vector from this.origin → target
-        target_vector = tgt - self.translation
+        target_vector = tgt - self._translation
 
         # 3) call into our compiled routine
         return rotation_to(
             target_vector,
-            self.rotation,
+            self._rotation,
             self.basis_forward()
         )
 
@@ -195,18 +214,18 @@ class LocalTransform:
         """
         # 1) grab the world-space target translation
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
 
         # 2) form the vector from this.origin → target
-        target_vector = tgt - self.translation
+        target_vector = tgt - self._translation
 
         # 3) call into our compiled routine
         return rotation_to_quaternion(
             rotation_to(
                 target_vector,
-                self.rotation,
+                self._rotation,
                 self.basis_forward()
             ),
             w_last=w_last
@@ -225,16 +244,16 @@ class LocalTransform:
         """
         # 1) grab the world-space target translation
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
 
         # 2) form the vector from this.origin → target
-        target_vector = tgt - self.translation
+        target_vector = tgt - self._translation
 
         R = rotation_to(
             target_vector,
-            self.rotation,
+            self._rotation,
             self.basis_forward()
         )
 
@@ -272,9 +291,9 @@ class LocalTransform:
             (azimuth, elevation)
         """
         if isinstance(target, LocalTransform):
-            target_vector = target.translation - self.translation
+            target_vector = target._translation - self._translation
         else:
-            target_vector = np_asarray(target, float) - self.translation
+            target_vector = np_asarray(target, float) - self._translation
 
         return azimuth_elevation_to(
             target_vector,
@@ -312,9 +331,9 @@ class LocalTransform:
             (φ, θ)
         """
         if isinstance(target, LocalTransform):
-            target_vector = target.translation - self.translation
+            target_vector = target._translation - self._translation
         else:
-            target_vector = np_asarray(target, float) - self.translation
+            target_vector = np_asarray(target, float) - self._translation
 
         return phi_theta_to(
             target_vector,
@@ -349,9 +368,9 @@ class LocalTransform:
             (latitude, longitude)
         """
         if isinstance(target, LocalTransform):
-            target_vector = target.translation - self.translation
+            target_vector = target._translation - self._translation
         else:
-            target_vector = np_asarray(target, float) - self.translation
+            target_vector = np_asarray(target, float) - self._translation
 
         return latitude_longitude_to(
             target_vector,
@@ -385,23 +404,21 @@ class LocalTransform:
         """
         # 1) compute pure‐rotation that points forward at target
         if isinstance(target, LocalTransform):
-            tgt = target.translation
+            tgt = target._translation
         else:
             tgt = np_asarray(target, float)
-        target_vector = tgt - self.translation
-        R_new = rotation_to(target_vector, self.rotation, self.basis_forward())
+        target_vector = tgt - self._translation
+        R_new = rotation_to(target_vector, self._rotation,
+                            self.basis_forward())
 
         # 3) compose back and write
-        block = R_new @ self.rotation
+        block = R_new @ self._rotation
         if inplace:
-            self.rotation[:] = block
+            self._rotation[:] = block
+            self._dirty = True
             return self
 
-        instance = object.__new__(self.__class__)
-        instance.translation = self.translation.copy()
-        instance.rotation = block.copy()
-        instance.scale = self.scale.copy()
-        return instance
+        return self.__class__.from_unchecked_values(self._translation.copy(), block.copy(), self._scale.copy())
 
     ###########
     # Directional properties derived from coordinate system convention
@@ -626,7 +643,7 @@ class LocalTransform:
             B_old = self.basis_matrix()      # rows = old-local axes in world
             B_new = other.basis_matrix()     # rows = new-local axes in world
             P     = B_old.T @ B_new          # new-local → old-local
-            M_new = self.rotation @ C
+            M_new = self._rotation @ C
 
         Args:
             other:     The LocalTransform *class* whose basis you want to switch into.
@@ -643,11 +660,11 @@ class LocalTransform:
         P = B_old.T @ B_new                # (3×3)
 
         # return an instance of the *other* subclass
-        instance = object.__new__(other)
-        instance.translation = self.translation.copy()
-        instance.rotation = (self.rotation @ P).copy()
-        instance.scale = self.scale.copy()
-        return instance
+        return self.__class__.from_unchecked_values(
+            self._translation.copy(),  # copy translation
+            self._rotation @ P,       # rotate the rotation matrix
+            self._scale.copy()        # copy scale
+        )
 
     def __matmul__(self, other: "LocalTransform") -> "LocalTransform":
         """
@@ -660,10 +677,10 @@ class LocalTransform:
             A new LocalTransform that is the result of the multiplication,
             with independent copies of translation, rotation, and scale.
         """
-        translation = (self.translation + self.rotation @
-                       other.translation).copy()
-        rotation = (self.rotation @ other.rotation).copy()
-        scale = (self.scale * other.scale).copy()
+        translation = (self._translation + self._rotation @
+                       other._translation)
+        rotation = (self._rotation @ other._rotation)
+        scale = (self._scale * other._scale)
         return self.__class__.from_unchecked_values(translation, rotation, scale)
 
     def __rmatmul__(self, other: "LocalTransform") -> "LocalTransform":
@@ -678,9 +695,9 @@ class LocalTransform:
             with independent copies of translation, rotation, and scale.
         """
         return self.__class__.from_unchecked_values(
-            (other.translation + other.rotation @ self.translation).copy(),
-            (other.rotation @ self.rotation).copy(),
-            (other.scale * self.scale).copy()
+            (other._translation + other._rotation @ self._translation),
+            (other._rotation @ self._rotation),
+            (other._scale * self._scale)
         )
 
     def __mult__(self, other: "LocalTransform") -> "LocalTransform":
@@ -704,12 +721,12 @@ class LocalTransform:
             return True
         if self.__class__ is not other.__class__:
             return False
-        return np.allclose(self.translation, other.translation) and \
-            np.allclose(self.rotation, other.rotation) and \
-            np.allclose(self.scale, other.scale)
+        return np.allclose(self._translation, other._translation) and \
+            np.allclose(self._rotation, other._rotation) and \
+            np.allclose(self._scale, other._scale)
 
     def __repr__(self):
-        return f"{self.__class__.__name__}(translation={self.translation}, rotation={self.rotation}, scale={self.scale})"
+        return f"{self.__class__.__name__}(translation={self._translation}, rotation={self._rotation}, scale={self._scale})"
 
     def __str__(self):
         return self.__repr__()
@@ -718,7 +735,7 @@ class LocalTransform:
         """
         Shallow copy of this LocalTransform (matrix is copied).
         """
-        return self.__class__.from_unchecked_values(self.translation.copy(), self.rotation.copy(), self.scale.copy())
+        return self.__class__.from_unchecked_values(self._translation.copy(), self._rotation.copy(), self._scale.copy())
 
     def __deepcopy__(self, memo) -> "LocalTransform":
         """
@@ -731,7 +748,7 @@ class LocalTransform:
         """
         Pickle support: reprunes to (class, (translation, rotation, scale))
         """
-        return (self.__class__, (self.translation.copy(), self.rotation.copy(), self.scale.copy()))
+        return (self.__class__, (self._translation.copy(), self._rotation.copy(), self._scale.copy()))
 
 
 def _create_frame_convention(
@@ -822,11 +839,11 @@ def _create_frame_convention(
     def _make_world_dir(reverse: bool, column_number: int):
         if reverse:
             def direction(self) -> np.ndarray:
-                return -self.rotation[:, column_number]
+                return -self._rotation[:, column_number]
             return direction
         else:
             def direction(self) -> np.ndarray:
-                return self.rotation[:, column_number]
+                return self._rotation[:, column_number]
             return direction
 
     basis_matrix = np.array([x_vec, y_vec, z_vec], dtype=np.float64)

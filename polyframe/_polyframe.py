@@ -605,7 +605,7 @@ class WorldTransform:
     # Target methods
     #
 
-    def distance_to(self, target: Union["WorldTransform", ndarray]) -> float:
+    def distance_to(self, target: Union["WorldTransform", ndarray]) -> np.floating:
         """
         Compute the distance to another WorldTransform or translation vector.
 

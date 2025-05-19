@@ -1,6 +1,7 @@
 # utils.py
 
 import numpy as np
+from typing import Union
 from polyframe.geometry import pure_rotation_if_possible
 from numba import njit
 from numba.core.errors import NumbaPerformanceWarning
@@ -10,13 +11,57 @@ _EYE4 = np.eye(4)
 
 
 @njit(cache=True)
-def to_matrix(translation: np.ndarray, rotation: np.ndarray, scale: np.ndarray) -> np.ndarray:
-    """Convert the transform to a 4x4 transformation matrix."""
+def to_matrix(translation: np.ndarray, rotation: np.ndarray, scale: Union[float, np.ndarray]) -> np.ndarray:
+    """Convert the transform to a 4x4 transformation matrix. Scale first, then rotate."""
     m = _EYE4.copy()
     # Scale each column of the rotation matrix by the corresponding scale factor.
     m[:3, :3] = rotation * scale
     m[:3, 3] = translation
     return m
+
+
+@njit(cache=True)
+def to_inv_matrix(translation: np.ndarray, rotation: np.ndarray, scale: Union[float, np.ndarray]) -> np.ndarray:
+    """Convert the transform to a 4x4 transformation matrix. Scale first, then rotate."""
+    m = _EYE4.copy()
+    # Scale each column of the rotation matrix by the corresponding scale factor.
+    m[:3, :3] = rotation.T / scale
+    m[:3, 3] = -rotation.T @ translation
+    return m
+
+
+@njit(cache=True)
+def decompose_matrix(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Decompose a 4x4 transformation matrix into translation, rotation, and scale.
+    Ignore shear and non-uniform scale.
+
+    Args:
+        mat (_type_): 4x4 transformation matrix
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, float]: translation, rotation, scale
+    """
+    # mat: float64[4,4]
+    # 1) translation
+    t = mat[:3, 3].copy()
+
+    # 2) upper 3×3
+    M = mat[:3, :3]
+
+    # 3) SVD
+    U, sigma, Vt = np.linalg.svd(M)
+
+    # 4) proper rotation
+    R = U @ Vt
+    # if reflection, flip last column of Vt
+    if np.linalg.det(R) < 0.0:
+        Vt[-1, :] *= -1.0
+        R = U @ Vt
+
+    # 5) uniform scale = max singular value
+    scale = sigma.max()
+
+    return t, R, scale
 
 
 @njit(cache=True)

@@ -22,8 +22,8 @@ class LocalTransform:
     __slots__ = ('_translation', '_rotation', '_scale', '_dirty', '_matrix')
 
     def __init__(self, translation: Union[None, Iterable] = None, rotation: Union[None, Iterable] = None, scale: Union[None, Iterable] = None):
-        self._dirty = True
-        self._matrix = None
+        self._dirty: bool = True
+        self._matrix: Union[None, np.ndarray] = None
         if translation is not None:
             self._translation = np_asarray(translation)
             if self._translation.shape != (3,):
@@ -867,7 +867,7 @@ def _create_frame_convention(
 
         # basis-info statics (unchanged)
         "is_right_handed":  staticmethod(lambda: is_right_handed),
-        "is_left_handed":  staticmethod(lambda: not is_right_handed),
+        "is_left_handed":   staticmethod(lambda: not is_right_handed),
         "label_x":          staticmethod(lambda: x),
         "label_y":          staticmethod(lambda: y),
         "label_z":          staticmethod(lambda: z),

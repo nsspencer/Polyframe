@@ -3,7 +3,7 @@
 import numpy as np
 from typing import Union
 from polyframe.geometry import pure_rotation_if_possible
-from numba import njit
+from numba import njit, float64
 from numba.core.errors import NumbaPerformanceWarning
 import warnings
 warnings.filterwarnings("ignore", category=NumbaPerformanceWarning)

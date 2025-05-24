@@ -8,6 +8,8 @@ using Eigen::Matrix3d;
 using Eigen::Matrix4d;
 using Eigen::Vector3d;
 
+// Tolerance for numerical stability checks
+static constexpr double kTol = 1e-6;
 
 class RigidTransform
 {
@@ -15,8 +17,6 @@ class RigidTransform
         Vector3d m_translation;
         Matrix3d m_rotation;
         double m_scale;
-
-        static constexpr double kTol = 1e-6;
 
         /// Compute the nearest proper (determinant +1) orthogonal matrix via SVD.
         static Eigen::Matrix3d sanitize_rotation(const Eigen::Matrix3d &R_in) {

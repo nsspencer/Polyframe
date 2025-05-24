@@ -1,7 +1,7 @@
 #pragma once
 #include <array>
 #include <Eigen/Dense>
-#include "polyframe/rigid_transform.hpp"
+#include "rigid_transform.hpp"
 
 
 /// All six semantic directions in world space.

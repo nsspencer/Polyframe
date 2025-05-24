@@ -14,7 +14,7 @@ dependencies = [
     "numpy",
     "numba"
 ]
-keywords = ["geometry", "transforms", "3d", "coordinate systems", "homogeneous", "pose", "robotics"]
+keywords = ["rigid transform", "geometry", "transform", "3d", "coordinate systems", "homogeneous", "pose", "robotics"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

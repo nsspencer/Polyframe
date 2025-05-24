@@ -31,7 +31,7 @@ jobs:
 
       - name: Build wheels with cibuildwheel
         # this action will read your pyproject.toml build-system.requires and invoke pip/PEP517 correctly
-        uses: pypa/cibuildwheel@v2
+        uses: pypa/cibuildwheel@v2.20.0
         with:
           # where to put the resulting .whl files
           output-dir: wheelhouse

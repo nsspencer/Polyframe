@@ -2,7 +2,7 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - 'v*'           # Runs when a tag like v1.0.0 is pushed
+      - 'v*.*.*'           # Runs when a tag like v1.0.0 is pushed
   workflow_dispatch:  # Optional manual trigger
 
 jobs:

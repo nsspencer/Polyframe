@@ -4,7 +4,7 @@ project(polyframe LANGUAGES CXX)
 # set(CMAKE_BUILD_TYPE Debug)
 # set(CMAKE_CXX_FLAGS_DEBUG "-g" CACHE STRING "Debug compiler flags" FORCE)
 # set(CMAKE_C_FLAGS_DEBUG "-g" CACHE STRING "Debug compiler flags" FORCE)
-set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -march=native -DNDEBUG")
+# set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -march=native -DNDEBUG")
 
 
 # -----------------------------------------------------------------------------

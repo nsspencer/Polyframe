@@ -10,7 +10,7 @@ using Eigen::Vector3d;
 
 // Tolerance for numerical stability checks
 static constexpr double kTol = 1e-6;
-static constexpr double kPI = std::acos(-1.0);
+static constexpr double kPI  = 3.14159265358979323846;
 
 
 class RigidTransform

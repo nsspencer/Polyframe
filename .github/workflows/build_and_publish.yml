@@ -15,7 +15,7 @@ jobs:
 
     env:                              # only env visible to this step!
         # Skip Py‑3.6, Py‑3.7 and 32‑bit Win wheels (need ≥3.8 & 64‑bit)
-        CIBW_SKIP: "cp36-* cp37-* *-win32"
+        CIBW_SKIP: "cp36-* cp37-* *-win32 pp36-* pp37-*"
 
     steps:
       - name: Checkout code

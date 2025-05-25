@@ -583,7 +583,7 @@ NB_MODULE(_polyframe, m)
                     throw std::invalid_argument("Invalid Euler order: " + order);
 
                 if (degrees)
-                    ang *= (180.0 / M_PI);
+                    ang *= (180.0 / kPI);
 
                 /* pack into a (3,) float64 ndarray (same helper you already have) */
                 PyObject *py = make_vec3();

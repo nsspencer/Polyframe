@@ -10,6 +10,8 @@ using Eigen::Vector3d;
 
 // Tolerance for numerical stability checks
 static constexpr double kTol = 1e-6;
+static constexpr double kPI = std::acos(-1.0);
+
 
 class RigidTransform
 {
@@ -143,19 +145,19 @@ class RigidTransform
         }
 
         RigidTransform rotate_x(double angle, bool degrees = true) const {
-            double rad = degrees ? angle * M_PI / 180.0 : angle;
+            double rad = degrees ? angle * kPI / 180.0 : angle;
             Matrix3d R = Eigen::AngleAxisd(rad, Vector3d::UnitX()).toRotationMatrix();
             return rotate(R, false);
         }
 
         RigidTransform rotate_y(double angle, bool degrees = true) const {
-            double rad = degrees ? angle * M_PI / 180.0 : angle;
+            double rad = degrees ? angle * kPI / 180.0 : angle;
             Matrix3d R = Eigen::AngleAxisd(rad, Vector3d::UnitY()).toRotationMatrix();
             return rotate(R, false);
         }
 
         RigidTransform rotate_z(double angle, bool degrees = true) const {
-            double rad = degrees ? angle * M_PI / 180.0 : angle;
+            double rad = degrees ? angle * kPI / 180.0 : angle;
             Matrix3d R = Eigen::AngleAxisd(rad, Vector3d::UnitZ()).toRotationMatrix();
             return rotate(R, false);
         }
@@ -163,7 +165,7 @@ class RigidTransform
         RigidTransform rotate_xyz(double rx, double ry, double rz,
                                     bool degrees = true) const {
             if (degrees) {
-                rx *= M_PI/180.0; ry *= M_PI/180.0; rz *= M_PI/180.0;
+                rx *= kPI/180.0; ry *= kPI/180.0; rz *= kPI/180.0;
             }
             Matrix3d R =
                 (Eigen::AngleAxisd(rz, Vector3d::UnitZ()) *

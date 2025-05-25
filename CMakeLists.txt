@@ -78,13 +78,15 @@ if (WIN32)
   )
 endif()
 
+# --- regenerate stub with an explicit import path
 add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
     COMMAND "${Python_EXECUTABLE}" -m nanobind.stubgen
+            -i "$<TARGET_FILE_DIR:${MODULE_NAME}>"   # <-- search path
             -m ${MODULE_NAME}
-            -i "${CMAKE_CURRENT_BINARY_DIR}"
             -o "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME}.pyi"
     COMMENT "Generating PEP-561 stub for ${MODULE_NAME}"
 )
+
 add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "from typing import Union, Sequence" > "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME}.tmp.pyi"
     COMMAND ${CMAKE_COMMAND} -E cat "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME}.pyi" >> "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME}.tmp.pyi"

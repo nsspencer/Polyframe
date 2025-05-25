@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(eigen)
 # -----------------------------------------------------------------------------
 # 2) Locate Python + NumPy
 # -----------------------------------------------------------------------------
-find_package(Python COMPONENTS Interpreter Development NumPy REQUIRED)
+find_package(Python COMPONENTS Interpreter NumPy REQUIRED)
 
 # -----------------------------------------------------------------------------
 # 3) Locate nanobind
@@ -60,7 +60,6 @@ target_include_directories(${MODULE_NAME} PRIVATE
 # -----------------------------------------------------------------------------
 target_link_libraries(${MODULE_NAME} PRIVATE
     Eigen3::Eigen
-    Python::Python
 )
 
 # -----------------------------------------------------------------------------

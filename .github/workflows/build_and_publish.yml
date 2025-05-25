@@ -16,8 +16,9 @@ jobs:
 
     # skip 32-bit Windows (no interpreters installed)
     env:
-      CIBW_SKIP: '*-win32'
-      CIBW_SKIP: 'cp36-*'
+      CIBW_SKIP: |
+        '*-win32'
+        'cp36-*'
 
     steps:
       - name: Checkout code

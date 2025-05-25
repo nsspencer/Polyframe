@@ -73,6 +73,7 @@ install(TARGETS ${MODULE_NAME}
 add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
     COMMAND "${Python_EXECUTABLE}" -m nanobind.stubgen
             -m ${MODULE_NAME}
+            -i "${CMAKE_CURRENT_BINARY_DIR}"
             -o "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME}.pyi"
     COMMENT "Generating PEP-561 stub for ${MODULE_NAME}"
 )

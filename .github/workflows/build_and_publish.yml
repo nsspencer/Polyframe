@@ -2,45 +2,40 @@ name: Build & Publish Wheels
 
 on:
   push:
-    tags: ['v*.*.*']          # build only on version tags like v1.2.3
-  workflow_dispatch:          # …or when triggered manually
+    tags: ['v*.*.*']
+  workflow_dispatch:
 
 jobs:
-  build-and-publish:
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os:            [ubuntu-latest, windows-latest]
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
+        os: [ubuntu-latest, windows-latest]
+
+    env:
+      # skip 32-bit Python and old 3.6/3.7; also skip PyPy if you don't need it
+      CIBW_SKIP: "cp36-* cp37-* *-win32 *-pp*"
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4         # v4 is the latest stable
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      # ---- Build wheels --------------------------------------------------
-      - name: Build wheels with cibuildwheel
+      # no setup-python here—cibuildwheel will invoke each interpreter itself
+      - name: Build wheels
         uses: pypa/cibuildwheel@v2.20.0
         with:
-          output-dir: wheelhouse          # wheels land here
-        env:                              # only env visible to this step!
-          # Skip Py‑3.6, Py‑3.7 and 32‑bit Win wheels (need ≥3.8 & 64‑bit)
-          CIBW_SKIP: "cp36-* cp37-* *-win32 pp*"
+          output-dir: wheelhouse
 
-      # ---- Publish artefacts ---------------------------------------------
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
 
-      # ---- Release to PyPI (only on tag push) ----------------------------
       - name: Publish to PyPI
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        if: |
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@v1.5.0
         with:
           user: __token__

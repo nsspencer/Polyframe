@@ -2,56 +2,45 @@ name: Build & Publish Wheels
 
 on:
   push:
-    tags:
-      - 'v*.*.*'             # Only run on version tags, e.g. v1.2.3
-  workflow_dispatch:
+    tags: ['v*.*.*']          # build only on version tags like v1.2.3
+  workflow_dispatch:          # …or when triggered manually
 
 jobs:
   build-and-publish:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
-
-    # skip 32-bit Windows (no interpreters installed)
-    env:
-      CIBW_SKIP: |
-        '*-win32'
-        'cp36-*'
+        os:            [ubuntu-latest, windows-latest]
+        python-version ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4         # v4 is the latest stable
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install build-time requirements
-        run: |
-          pip install --upgrade pip setuptools wheel
-          # scikit-build-core, nanobind, numpy are pulled in by PEP517 build
-          # backend via build-system.requires, so you don't need to pip install them here.
-
+      # ---- Build wheels --------------------------------------------------
       - name: Build wheels with cibuildwheel
         uses: pypa/cibuildwheel@v2.20.0
         with:
-          output-dir: wheelhouse
-          # If your pyproject.toml is not at repo root, uncomment and adjust:
-          # project_dir: src/polyframe
+          output-dir: wheelhouse          # wheels land here
+        env:                              # only env visible to this step!
+          # Skip Py‑3.6, Py‑3.7 and 32‑bit Win wheels (need ≥3.8 & 64‑bit)
+          CIBW_SKIP: "cp36-* cp37-* *-win32"
 
-      - name: Upload built wheels
+      # ---- Publish artefacts ---------------------------------------------
+      - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
 
+      # ---- Release to PyPI (only on tag push) ----------------------------
       - name: Publish to PyPI
-        if: |
-          github.event_name == 'push' &&
-          startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@v1.5.0
         with:
           user: __token__

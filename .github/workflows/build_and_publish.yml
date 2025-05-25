@@ -1,22 +1,20 @@
 name: Build & Publish Wheels
 
-# Run on tags like v1.2.3, or manually
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*.*.*'             # Only run on version tags, e.g. v1.2.3
   workflow_dispatch:
 
 jobs:
   build-and-publish:
-    # only Ubuntu & Windows (avoid the macOS py-3.1 issue)
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
 
-    # Skip any *-win32 builds (no 32-bit Python interpreter installed) 
+    # skip 32-bit Windows (no interpreters installed)
     env:
       CIBW_SKIP: '*-win32'
 
@@ -29,14 +27,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install build-time requirements
+        run: |
+          pip install --upgrade pip setuptools wheel
+          # scikit-build-core, nanobind, numpy are pulled in by PEP517 build
+          # backend via build-system.requires, so you don't need to pip install them here.
+
       - name: Build wheels with cibuildwheel
-        # this action will read your pyproject.toml build-system.requires and invoke pip/PEP517 correctly
         uses: pypa/cibuildwheel@v2.20.0
         with:
-          # where to put the resulting .whl files
           output-dir: wheelhouse
+          # If your pyproject.toml is not at repo root, uncomment and adjust:
+          # project_dir: src/polyframe
 
-      - name: Upload wheels
+      - name: Upload built wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}

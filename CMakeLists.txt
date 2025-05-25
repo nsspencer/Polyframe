@@ -70,6 +70,14 @@ install(TARGETS ${MODULE_NAME}
         LIBRARY DESTINATION ${SKBUILD_PROJECT_NAME}
         ARCHIVE DESTINATION ${SKBUILD_PROJECT_NAME})
 
+# --- ensure on Windows the .pyd has no ABI‐tag suffix
+if (WIN32)
+  set_target_properties(${MODULE_NAME} PROPERTIES
+    OUTPUT_NAME "${MODULE_NAME}"
+    SUFFIX ".pyd"                     # force the .pyd extension
+  )
+endif()
+
 add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
     COMMAND "${Python_EXECUTABLE}" -m nanobind.stubgen
             -m ${MODULE_NAME}

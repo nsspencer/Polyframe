@@ -13,14 +13,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     env:
-      # skip 32-bit Python and old 3.6/3.7; also skip PyPy if you don't need it
       CIBW_SKIP: "cp36-* cp37-* *-win32 pp*"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # no setup-python here—cibuildwheel will invoke each interpreter itself
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.20.0
         with:

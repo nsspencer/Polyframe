@@ -14,11 +14,17 @@
 #include <cmath>
 #include "frame_convention.hpp"
 #include "rigid_transform.hpp"
+#include "local_transform.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;            // for "_a" literals
 using nb::sig;
 
+// or use the helper to define the convention
+// static auto X_FORWARD_Z_UP = local::LocalTransform<
+//     local::Direction::Forward,
+//     local::Direction::Left,
+//     local::Direction::Up>();
 
 // Forward declaration of the raw init function:
 extern "C" int _import_array();

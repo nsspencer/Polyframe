@@ -4,29 +4,14 @@ project(polyframe LANGUAGES CXX)
 # set(CMAKE_BUILD_TYPE Debug)
 # set(CMAKE_CXX_FLAGS_DEBUG "-g" CACHE STRING "Debug compiler flags" FORCE)
 # set(CMAKE_C_FLAGS_DEBUG "-g" CACHE STRING "Debug compiler flags" FORCE)
-# set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -march=native -DNDEBUG")
-
 
 # -----------------------------------------------------------------------------
-# 1) Vendor Eigen via FetchContent
-# -----------------------------------------------------------------------------
-include(FetchContent)
-FetchContent_Declare(
-  eigen
-  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-  GIT_TAG 3.4.0
-  GIT_SHALLOW TRUE
-)
-set(BUILD_TESTING OFF CACHE BOOL \"Disable Eigen’s tests\")
-FetchContent_MakeAvailable(eigen)
-
-# -----------------------------------------------------------------------------
-# 2) Locate Python + NumPy
+# Locate Python + NumPy
 # -----------------------------------------------------------------------------
 find_package(Python COMPONENTS Interpreter NumPy REQUIRED)
 
 # -----------------------------------------------------------------------------
-# 3) Locate nanobind
+# Locate nanobind
 # -----------------------------------------------------------------------------
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
@@ -37,7 +22,7 @@ list(APPEND CMAKE_PREFIX_PATH "${nanobind_ROOT}")
 find_package(nanobind CONFIG REQUIRED)
 
 # -----------------------------------------------------------------------------
-# 4) Configure the Python extension
+# Configure the Python extension
 # -----------------------------------------------------------------------------
 set(MODULE_NAME _polyframe)
 nanobind_add_module(${MODULE_NAME}
@@ -45,25 +30,16 @@ nanobind_add_module(${MODULE_NAME}
 )
 
 # -----------------------------------------------------------------------------
-# 5) Include directories
+# Include directories
 # -----------------------------------------------------------------------------
 target_include_directories(${MODULE_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extern/Eigen
     ${Python_NumPy_INCLUDE_DIR}
 )
 
-# Eigen is now available via FetchContent; use its target
-# nanobind provided the nanobind_CMAKE_DIR and target
-
 # -----------------------------------------------------------------------------
-# 6) Link libraries
-# -----------------------------------------------------------------------------
-target_link_libraries(${MODULE_NAME} PRIVATE
-    Eigen3::Eigen
-)
-
-# -----------------------------------------------------------------------------
-# 7) Installation & stub generation
+# Installation & stub generation
 # -----------------------------------------------------------------------------
 install(TARGETS ${MODULE_NAME}
         RUNTIME DESTINATION ${SKBUILD_PROJECT_NAME}
